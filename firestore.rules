@@ -1,0 +1,47 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/businessUsers/$(request.auth.uid))
+        && get(/databases/$(database)/documents/businessUsers/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function roleOnlyUpdate() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'role',
+        'approved',
+        'approvedAt'
+      ]);
+    }
+
+    match /businessUsers/{userId} {
+      allow create: if isOwner(userId) && request.resource.data.role == 'pending';
+      allow read: if isOwner(userId) || isAdmin();
+      allow update: if isAdmin() && roleOnlyUpdate();
+      allow delete: if false;
+    }
+
+    match /orderRequests/{requestId} {
+      allow create: if isSignedIn()
+        && request.resource.data.requesterUid == request.auth.uid
+        && request.resource.data.customer.uid == request.auth.uid;
+      allow read: if isAdmin() || (isSignedIn() && resource.data.requesterUid == request.auth.uid);
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
