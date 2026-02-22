@@ -1,8 +1,8 @@
 window.FIREBASE_CONFIG = {
-  apiKey: "AIzaSyDx77BlAAUNfVDD53XA7Ro_-L_-OPvix68",
-  authDomain: "mewanwellpower.firebaseapp.com",
-  projectId: "mewanwellpower",
-  storageBucket: "mewanwellpower.firebasestorage.app",
-  messagingSenderId: "281078326402",
-  appId: "1:281078326402:web:d82f67eb30a2dae46a409b"
+apiKey: "AIzaSyB6HRLq6vFlBy7uvuMpd-VeKKdyKN4abY4",
+  authDomain: "meanwellpower-103ae.firebaseapp.com",
+  projectId: "meanwellpower-103ae",
+  storageBucket: "meanwellpower-103ae.firebasestorage.app",
+  messagingSenderId: "459112128979",
+  appId: "1:459112128979:web:dc0782d0d6c64318588f26"
 };
