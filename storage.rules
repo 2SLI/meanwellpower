@@ -5,6 +5,27 @@ rules_version = '2';
 //    /databases/(default)/documents/users/$(request.auth.uid)).data.isAdmin;
 service firebase.storage {
   match /b/{bucket}/o {
+    function isAdmin() {
+      return request.auth != null
+        && firestore.exists(/databases/(default)/documents/businessUsers/$(request.auth.uid))
+        && firestore.get(/databases/(default)/documents/businessUsers/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    match /thumbnails/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /products/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /detail/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }

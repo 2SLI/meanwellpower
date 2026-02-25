@@ -8,6 +8,9 @@ const ORDER_UI_EVENT = 'mw-orders-ui-event';
 const ORDER_REQUEST_COLLECTION = 'orderRequests';
 
 let orderRequestsCache = [];
+let sharedSnapshotKey = '';
+let sharedSnapshotStop = null;
+const sharedSnapshotListeners = new Set();
 
 function canUseStorage() {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
@@ -174,6 +177,31 @@ export async function appendOrderRequest(payload) {
   return { id: created.id, ...requestPayload };
 }
 
+function notifySharedSnapshotListeners() {
+  sharedSnapshotListeners.forEach((listener) => {
+    try {
+      listener();
+    } catch (error) {
+      // noop: keep notifying other listeners
+    }
+  });
+}
+
+function closeSharedSnapshot() {
+  if (typeof sharedSnapshotStop === 'function') {
+    sharedSnapshotStop();
+  }
+  sharedSnapshotStop = null;
+  sharedSnapshotKey = '';
+}
+
+function buildSnapshotKey({ isAdmin, uid }) {
+  if (isAdmin) {
+    return 'admin:all';
+  }
+  return uid ? `user:${uid}` : 'user:none';
+}
+
 export function subscribeOrderUpdates(callback, options = {}) {
   const unsubs = [];
 
@@ -205,8 +233,18 @@ export function subscribeOrderUpdates(callback, options = {}) {
   const role = options?.role ?? null;
   const uid = options?.uid ?? auth?.currentUser?.uid ?? '';
   const isAdmin = role === USER_ROLES.ADMIN;
+  const nextSnapshotKey = buildSnapshotKey({ isAdmin, uid });
+
+  sharedSnapshotListeners.add(callback);
+  unsubs.push(() => {
+    sharedSnapshotListeners.delete(callback);
+    if (sharedSnapshotListeners.size === 0) {
+      closeSharedSnapshot();
+    }
+  });
 
   if (!isAdmin && !uid) {
+    closeSharedSnapshot();
     orderRequestsCache = [];
     callback();
     return () => {
@@ -214,22 +252,27 @@ export function subscribeOrderUpdates(callback, options = {}) {
     };
   }
 
-  const baseCollection = collection(db, ORDER_REQUEST_COLLECTION);
-  const streamQuery = isAdmin ? baseCollection : query(baseCollection, where('requesterUid', '==', uid));
+  if (!sharedSnapshotStop || sharedSnapshotKey !== nextSnapshotKey) {
+    closeSharedSnapshot();
 
-  const stopSnapshot = onSnapshot(
-    streamQuery,
-    (snapshot) => {
-      orderRequestsCache = sortRequestsDesc(snapshot.docs.map(normalizeOrderRequest));
-      callback();
-    },
-    () => {
-      orderRequestsCache = [];
-      callback();
-    }
-  );
+    const baseCollection = collection(db, ORDER_REQUEST_COLLECTION);
+    const streamQuery = isAdmin ? baseCollection : query(baseCollection, where('requesterUid', '==', uid));
 
-  unsubs.push(stopSnapshot);
+    sharedSnapshotKey = nextSnapshotKey;
+    sharedSnapshotStop = onSnapshot(
+      streamQuery,
+      (snapshot) => {
+        orderRequestsCache = sortRequestsDesc(snapshot.docs.map(normalizeOrderRequest));
+        notifySharedSnapshotListeners();
+      },
+      () => {
+        orderRequestsCache = [];
+        notifySharedSnapshotListeners();
+      }
+    );
+  }
+
+  callback();
 
   return () => {
     unsubs.forEach((unsubscribe) => unsubscribe());

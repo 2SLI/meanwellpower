@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
+import { getDownloadURL, ref } from 'firebase/storage';
 import { canViewWholesalePrice } from '../lib/roles';
 import { getCatalogProductBySlug, subscribeCatalogUpdates } from '../lib/productCatalog';
+import { storage } from '../lib/firebase';
 import {
   openOrderListModal,
   readOrderListItems,
@@ -19,6 +21,7 @@ function ProductDetailPage({ user, profile }) {
   const [quantity, setQuantity] = useState(1);
   const [orderItems, setOrderItems] = useState(() => readOrderListItems());
   const [orderNotice, setOrderNotice] = useState('');
+  const [commonDetailImageUrl, setCommonDetailImageUrl] = useState('');
 
   useEffect(() => {
     return subscribeCatalogUpdates(() => {
@@ -30,6 +33,33 @@ function ProductDetailPage({ user, profile }) {
     return subscribeOrderListUpdates(() => {
       setOrderItems(readOrderListItems());
     });
+  }, []);
+
+  useEffect(() => {
+    let canceled = false;
+
+    if (!storage) {
+      setCommonDetailImageUrl('');
+      return () => {
+        canceled = true;
+      };
+    }
+
+    getDownloadURL(ref(storage, 'detail/common-detail-long-01.png'))
+      .then((url) => {
+        if (!canceled) {
+          setCommonDetailImageUrl(url);
+        }
+      })
+      .catch(() => {
+        if (!canceled) {
+          setCommonDetailImageUrl('');
+        }
+      });
+
+    return () => {
+      canceled = true;
+    };
   }, []);
 
   const product = useMemo(() => getCatalogProductBySlug(slug), [slug, catalogVersion]);
@@ -85,15 +115,6 @@ function ProductDetailPage({ user, profile }) {
     return <Navigate to="/" replace />;
   }
 
-  const specRows = [
-    ['입력 전압', product.specs.input],
-    ['출력 전압', product.specs.outputVoltage],
-    ['출력 전류', product.specs.outputCurrent],
-    ['정격 출력', product.specs.power],
-    ['효율', product.specs.efficiency],
-    ['동작 온도', product.specs.operatingTemp]
-  ];
-
   return (
     <main className="mx-auto min-h-screen w-full max-w-[1240px] px-6 pb-20 pt-28 sm:px-10">
       <div className="mb-6 flex items-center gap-2 text-xs text-[var(--muted)]">
@@ -107,28 +128,32 @@ function ProductDetailPage({ user, profile }) {
       <section className="grid gap-6 lg:grid-cols-[1.08fr_0.92fr]">
         <div className="rounded-2xl border border-[var(--line)] bg-white p-4 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.45)] sm:p-6">
           <div className="overflow-hidden rounded-xl border border-[var(--line)]">
-            <img src={selectedImage} alt={`${product.model} 상세 이미지`} className="h-[340px] w-full object-cover sm:h-[460px]" />
+            <img src={selectedImage} alt={`${product.model} 상세 이미지`} className="aspect-square w-full bg-white object-contain" />
           </div>
 
           <div className="mt-3 grid grid-cols-3 gap-2">
             {product.detailImages.map((image) => (
               <button
                 key={image}
+                type="button"
                 onClick={() => setSelectedImage(image)}
                 className={`overflow-hidden rounded-lg border transition ${
                   selectedImage === image ? 'border-[var(--gold)]' : 'border-[var(--line)] hover:border-[#9aa6b8]'
                 }`}
               >
-                <img src={image} alt={`${product.model} 썸네일`} className="h-20 w-full object-cover" />
+                <img src={image} alt={`${product.model} 썸네일`} className="aspect-square w-full bg-white object-contain" />
               </button>
             ))}
           </div>
+
         </div>
 
         <div className="rounded-2xl border border-[var(--line)] bg-white p-6 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.45)] sm:p-8">
           <p className="text-xs font-semibold tracking-[0.15em] text-[var(--muted)]">{product.brand}</p>
           <h1 className="mt-2 font-brand text-3xl tracking-[0.05em] text-[var(--navy)]">{product.model}</h1>
-          <p className="mt-2 text-sm text-[var(--muted)]">{product.category} · {product.spec}</p>
+          <p className="mt-2 text-sm text-[var(--muted)]">
+            {product.category} / {product.spec}
+          </p>
 
           <p className="mt-5 text-sm leading-relaxed text-[var(--muted)]">{product.description}</p>
 
@@ -137,20 +162,18 @@ function ProductDetailPage({ user, profile }) {
               공급가 : <span className="line-through">{product.supplyPrice}</span>
             </p>
             {isWholesaleAvailable ? (
-              <p className="mt-1 font-brand text-3xl font-bold text-[var(--navy)]">
-                도매가 : {product.wholesalePrice}
-              </p>
+              <p className="mt-1 font-brand text-3xl font-bold text-[var(--navy)]">판매가 : {product.wholesalePrice}</p>
             ) : user ? (
-              <p className="mt-1 font-brand text-3xl font-bold text-amber-600">도매가 승인대기중</p>
+              <p className="mt-1 font-brand text-3xl font-bold text-amber-600">판매가 승인대기중</p>
             ) : (
-              <p className="mt-1 font-brand text-3xl font-bold text-red-600">도매가 로그인</p>
+              <p className="mt-1 font-brand text-3xl font-bold text-red-600">판매가 로그인 필요</p>
             )}
             <p className="mt-1 text-xs font-semibold tracking-[0.08em] text-[var(--muted)]">부가세 별도</p>
             <p className="mt-2 text-xs font-semibold tracking-[0.06em] text-[var(--muted)]">{product.leadTime}</p>
           </div>
 
           <div className="mt-6 flex flex-wrap gap-2">
-            {product.features.map((feature) => (
+            {(product.features || []).map((feature) => (
               <span
                 key={feature}
                 className="rounded-full border border-[var(--line)] bg-white px-3 py-1.5 text-xs font-semibold text-[var(--navy)]"
@@ -208,30 +231,15 @@ function ProductDetailPage({ user, profile }) {
         </div>
       </section>
 
-      <section className="mt-8 rounded-2xl border border-[var(--line)] bg-white p-6 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.45)] sm:p-8">
-        <h2 className="font-brand text-2xl tracking-[0.05em] text-[var(--navy)]">상품 상세 정보</h2>
-
-        <div className="mt-5 overflow-hidden rounded-xl border border-[var(--line)]">
-          <table className="w-full border-collapse text-sm">
-            <tbody>
-              {specRows.map(([label, value]) => (
-                <tr key={label} className="border-t border-[var(--line)] first:border-t-0">
-                  <th className="w-40 bg-[#f7f9fc] px-4 py-3 text-left font-semibold text-[var(--muted)]">{label}</th>
-                  <td className="px-4 py-3 text-[var(--ink)]">{value}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="mt-6 space-y-3">
-          {product.detailImages.map((image) => (
-            <div key={image} className="overflow-hidden rounded-xl border border-[var(--line)]">
-              <img src={image} alt={`${product.model} 상세 배너`} className="h-[280px] w-full object-cover sm:h-[420px]" />
-            </div>
-          ))}
-        </div>
-      </section>
+      {commonDetailImageUrl ? (
+        <section className="mt-8 rounded-2xl border border-[var(--line)] bg-white p-4 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.45)] sm:p-6">
+          <p className="text-xs font-semibold tracking-[0.12em] text-[var(--muted)]">DETAIL</p>
+          <h2 className="mt-2 font-brand text-2xl tracking-[0.05em] text-[var(--navy)]">상세 안내</h2>
+          <div className="mt-4 overflow-hidden rounded-xl border border-[var(--line)] bg-white">
+            <img src={commonDetailImageUrl} alt="공통 상세 안내 이미지" className="w-full object-contain" />
+          </div>
+        </section>
+      ) : null}
     </main>
   );
 }

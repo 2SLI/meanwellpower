@@ -33,7 +33,13 @@ import { db, isFirebaseConfigured, storage } from '../lib/firebase';
 import { products as sampleProducts } from '../data/products';
 import { USER_ROLES, resolveRole, roleLabel } from '../lib/roles';
 import { readOrderRequests, subscribeOrderUpdates } from '../lib/orderRequests';
-import { getCatalogProducts, normalizeSlug, subscribeCatalogUpdates, upsertCatalogProduct } from '../lib/productCatalog';
+import {
+  getCatalogProducts,
+  normalizeSlug,
+  subscribeCatalogUpdates,
+  syncCatalogProductsToFirestoreFromThumbnails,
+  upsertCatalogProduct
+} from '../lib/productCatalog';
 
 const ADMIN_TABS = [
   { id: 'product-create', label: '상품등록', icon: PackagePlus },
@@ -158,6 +164,7 @@ function AdminPage({ user, profile, authReady }) {
   // ✅ 이미지 업로드 상태
   const [uploadingField, setUploadingField] = useState('');
   const [uploadProgressText, setUploadProgressText] = useState('');
+  const [syncingThumbnails, setSyncingThumbnails] = useState(false);
 
   const isAdmin = authReady && profile?.role === USER_ROLES.ADMIN;
 
@@ -600,6 +607,24 @@ function AdminPage({ user, profile, authReady }) {
     }
   };
 
+  const onSyncThumbnailsToFirestore = async () => {
+    try {
+      setSyncingThumbnails(true);
+      setRegisterError('');
+      setRegisterNotice('');
+
+      const result = await syncCatalogProductsToFirestoreFromThumbnails({ folder: 'thumbnails' });
+      setCatalogProducts(getCatalogProducts());
+      setRegisterNotice(
+        `썸네일 동기화 완료: Storage ${result.storageFiles}건, Firestore 반영 ${result.updated}건`
+      );
+    } catch (error) {
+      setRegisterError('썸네일 동기화 실패: Firestore/Storage 권한 또는 경로(thumbnails)를 확인해 주세요.');
+    } finally {
+      setSyncingThumbnails(false);
+    }
+  };
+
   if (!isFirebaseConfigured) {
     return (
       <main className="mx-auto flex min-h-screen w-full max-w-[1320px] items-center px-6 pb-20 pt-28 sm:px-10">
@@ -950,12 +975,22 @@ function AdminPage({ user, profile, authReady }) {
                   </div>
                 </div>
 
-                <button
-                  disabled={Boolean(uploadingField)}
-                  className="mt-4 rounded-md bg-[var(--gold)] px-5 py-2.5 text-sm font-bold tracking-[0.06em] text-[#101a2f] disabled:opacity-60"
-                >
-                  상품 업로드
-                </button>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    disabled={Boolean(uploadingField) || syncingThumbnails}
+                    className="rounded-md bg-[var(--gold)] px-5 py-2.5 text-sm font-bold tracking-[0.06em] text-[#101a2f] disabled:opacity-60"
+                  >
+                    상품 업로드
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onSyncThumbnailsToFirestore}
+                    disabled={syncingThumbnails || Boolean(uploadingField)}
+                    className="rounded-md border border-[var(--line)] bg-white px-5 py-2.5 text-sm font-semibold tracking-[0.04em] text-[var(--navy)] disabled:opacity-60"
+                  >
+                    {syncingThumbnails ? 'thumbnails 동기화 중...' : 'thumbnails -> Firestore 동기화'}
+                  </button>
+                </div>
 
                 {uploadProgressText ? <p className="mt-3 text-sm font-medium text-amber-700">{uploadProgressText}</p> : null}
                 {registerNotice ? <p className="mt-4 text-sm font-medium text-emerald-700">{registerNotice}</p> : null}

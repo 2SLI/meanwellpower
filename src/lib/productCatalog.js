@@ -1,11 +1,12 @@
-import { products as seedProducts } from '../data/products';
+import { collection, doc, getDocs, serverTimestamp, setDoc } from 'firebase/firestore';
+import { getDownloadURL, listAll, ref } from 'firebase/storage';
+import { db, isFirebaseConfigured, storage } from './firebase';
 
-const STORAGE_KEY = 'mw_custom_products_v1';
 const UPDATE_EVENT = 'mw-products-updated';
+const firestoreProductsBySlug = new Map();
 
-function canUseStorage() {
-  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
-}
+let firestoreLoadPromise = null;
+let firestoreLoaded = false;
 
 export function normalizeSlug(value) {
   return String(value ?? '')
@@ -19,7 +20,6 @@ function normalizeFeatures(value) {
   if (Array.isArray(value)) {
     return value.map((item) => String(item).trim()).filter(Boolean);
   }
-
   return String(value ?? '')
     .split(/[,\n]/)
     .map((item) => item.trim())
@@ -33,30 +33,25 @@ function normalizeDetailImages(value, fallbackImage) {
       return cleaned;
     }
   }
-
-  if (fallbackImage) {
-    return [fallbackImage];
-  }
-
-  return [];
+  return fallbackImage ? [fallbackImage] : [];
 }
 
 function normalizeProduct(raw) {
   const image = String(raw?.image ?? '').trim();
-  const detailImages = normalizeDetailImages(raw?.detailImages, image);
   const slug = normalizeSlug(raw?.slug || raw?.model);
+  const model = String(raw?.model ?? '').trim() || String(raw?.slug ?? '').trim();
 
   return {
     slug,
     brand: String(raw?.brand ?? 'MEAN WELL').trim() || 'MEAN WELL',
-    model: String(raw?.model ?? '').trim(),
-    category: String(raw?.category ?? '').trim(),
+    model,
+    category: String(raw?.category ?? 'SMPS').trim(),
     spec: String(raw?.spec ?? '').trim(),
     leadTime: String(raw?.leadTime ?? '').trim(),
     supplyPrice: String(raw?.supplyPrice ?? '').trim(),
     wholesalePrice: String(raw?.wholesalePrice ?? '').trim(),
     image,
-    detailImages,
+    detailImages: normalizeDetailImages(raw?.detailImages, image),
     description: String(raw?.description ?? '').trim(),
     features: normalizeFeatures(raw?.features),
     specs: {
@@ -67,57 +62,76 @@ function normalizeProduct(raw) {
       efficiency: String(raw?.specs?.efficiency ?? '').trim(),
       operatingTemp: String(raw?.specs?.operatingTemp ?? '').trim()
     },
-    source: raw?.source === 'custom' ? 'custom' : 'seed'
+    source: 'firestore'
   };
 }
 
 function dispatchUpdateEvent() {
-  if (!canUseStorage()) {
+  if (typeof window === 'undefined') {
     return;
   }
-
   window.dispatchEvent(new Event(UPDATE_EVENT));
 }
 
-export function getCustomProducts() {
-  if (!canUseStorage()) {
-    return [];
+function normalizeFilenameToModel(fullPath) {
+  const fileName = String(fullPath ?? '').split('/').pop() ?? '';
+  if (!fileName) {
+    return '';
+  }
+  return fileName.replace(/\.[^.]+$/, '').trim();
+}
+
+async function walkStorageFiles(baseRef) {
+  const result = [];
+
+  async function walk(currentRef) {
+    const listed = await listAll(currentRef);
+    result.push(...listed.items);
+    for (const nested of listed.prefixes) {
+      await walk(nested);
+    }
   }
 
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return [];
-    }
+  await walk(baseRef);
+  return result;
+}
 
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-
-    return parsed
-      .map((product) => normalizeProduct({ ...product, source: 'custom' }))
-      .filter((product) => product.slug && product.model);
-  } catch (error) {
-    return [];
+async function ensureFirestoreProductsLoaded() {
+  if (!isFirebaseConfigured || !db || firestoreLoaded) {
+    return;
   }
+  if (firestoreLoadPromise) {
+    return firestoreLoadPromise;
+  }
+
+  firestoreLoadPromise = getDocs(collection(db, 'products'))
+    .then((snapshot) => {
+      firestoreProductsBySlug.clear();
+      snapshot.docs.forEach((snapshotDoc) => {
+        const normalized = normalizeProduct({
+          ...snapshotDoc.data(),
+          slug: snapshotDoc.id
+        });
+        if (normalized.slug && normalized.model) {
+          firestoreProductsBySlug.set(normalized.slug, normalized);
+        }
+      });
+      firestoreLoaded = true;
+      dispatchUpdateEvent();
+    })
+    .catch(() => {
+      // no-op
+    })
+    .finally(() => {
+      firestoreLoadPromise = null;
+    });
+
+  return firestoreLoadPromise;
 }
 
 export function getCatalogProducts() {
-  const merged = new Map();
-
-  seedProducts.forEach((product) => {
-    const normalized = normalizeProduct({ ...product, source: 'seed' });
-    if (normalized.slug) {
-      merged.set(normalized.slug, normalized);
-    }
-  });
-
-  getCustomProducts().forEach((product) => {
-    merged.set(product.slug, product);
-  });
-
-  return [...merged.values()];
+  ensureFirestoreProductsLoaded();
+  return [...firestoreProductsBySlug.values()];
 }
 
 export function getCatalogProductBySlug(slug) {
@@ -125,41 +139,95 @@ export function getCatalogProductBySlug(slug) {
 }
 
 export function upsertCatalogProduct(product) {
-  const normalized = normalizeProduct({ ...product, source: 'custom' });
+  const normalized = normalizeProduct(product);
   if (!normalized.slug || !normalized.model) {
     throw new Error('invalid-product');
   }
 
-  const custom = getCustomProducts();
-  const next = custom.filter((item) => item.slug !== normalized.slug);
-  next.unshift(normalized);
+  firestoreProductsBySlug.set(normalized.slug, normalized);
+  dispatchUpdateEvent();
 
-  if (canUseStorage()) {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    dispatchUpdateEvent();
+  if (db) {
+    setDoc(
+      doc(db, 'products', normalized.slug),
+      {
+        ...normalized,
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    ).catch(() => {});
   }
 
   return normalized;
 }
 
+export async function syncCatalogProductsToFirestoreFromThumbnails(options = {}) {
+  if (!db || !storage) {
+    throw new Error('firebase-not-configured');
+  }
+
+  const folder = String(options.folder ?? 'thumbnails').trim() || 'thumbnails';
+  const files = await walkStorageFiles(ref(storage, folder));
+
+  let updated = 0;
+
+  for (const fileRef of files) {
+    const model = normalizeFilenameToModel(fileRef.fullPath);
+    if (!model) {
+      continue;
+    }
+
+    const slug = normalizeSlug(model);
+    if (!slug) {
+      continue;
+    }
+
+    const imageUrl = await getDownloadURL(fileRef);
+    const existing = firestoreProductsBySlug.get(slug);
+
+    const normalized = normalizeProduct({
+      ...existing,
+      slug,
+      model,
+      image: imageUrl,
+      detailImages: [imageUrl],
+      thumbnailPath: fileRef.fullPath
+    });
+
+    await setDoc(
+      doc(db, 'products', slug),
+      {
+        ...normalized,
+        thumbnailPath: fileRef.fullPath,
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
+
+    firestoreProductsBySlug.set(slug, normalized);
+    updated += 1;
+  }
+
+  firestoreLoaded = true;
+  dispatchUpdateEvent();
+
+  return {
+    folder,
+    storageFiles: files.length,
+    updated,
+    missing: Math.max(files.length - updated, 0)
+  };
+}
+
 export function subscribeCatalogUpdates(callback) {
-  if (!canUseStorage()) {
+  if (typeof window === 'undefined') {
     return () => {};
   }
 
-  const onStorage = (event) => {
-    if (event.key === STORAGE_KEY) {
-      callback();
-    }
-  };
-
   const onCustom = () => callback();
-
-  window.addEventListener('storage', onStorage);
   window.addEventListener(UPDATE_EVENT, onCustom);
 
   return () => {
-    window.removeEventListener('storage', onStorage);
     window.removeEventListener(UPDATE_EVENT, onCustom);
   };
 }
