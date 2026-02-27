@@ -50,7 +50,7 @@ function BusinessPage() {
               to="/login"
               className="rounded-md border border-white/35 px-6 py-3 text-sm font-semibold tracking-[0.05em] text-white transition hover:bg-white/10"
             >
-              사업자 로그인
+              로그인
             </Link>
           </div>
         </div>

@@ -4,15 +4,15 @@ const contactCards = [
   {
     title: '고객센터',
     description: '제품 문의, 발주/납기 상담은 전화로 빠르게 안내드립니다.',
-    value: '010-3305-7949',
-    href: 'tel:01033057949',
+    value: '010-6358-3144',
+    href: 'tel:01063583144',
     badge: 'CALL'
   },
   {
     title: '이메일',
     description: 'BOM/대량견적 요청은 이메일로 파일/모델명 보내주시면 됩니다.',
-    value: 'Dhlee@l-light.co.kr',
-    href: 'mailto:Dhlee@l-light.co.kr',
+    value: 'hclee@l-light.co.kr',
+    href: 'mailto:hclee@l-light.co.kr',
     badge: 'MAIL'
   }
 ];
@@ -20,10 +20,10 @@ const contactCards = [
 const companyInfo = [
   { label: '상호명', value: '비트로닉' },
   { label: '대표자', value: '이영애' },
-  { label: '고객센터', value: '010-3305-7949' },
+  { label: '고객센터', value: '010-6358-3144' },
   { label: '사업자등록번호', value: '8810902996' },
   { label: '통신판매업번호', value: '2025-충남천안-2381' },
-  { label: 'e-mail', value: 'Dhlee@l-light.co.kr' },
+  { label: 'e-mail', value: 'hclee@l-light.co.kr' },
   {
     label: '사업장 소재지',
     value: '충청남도 천안시 서북구 미라16길 33-4 비 102호 (우 : 31167)'
@@ -58,13 +58,13 @@ function ContactPage() {
 
           <div className="mt-7 flex flex-wrap gap-3">
             <a
-              href="tel:01033057949"
+              href="tel:01063583144"
               className="rounded-md bg-[var(--gold)] px-6 py-3 text-sm font-bold tracking-[0.05em] text-[#101a2f] transition hover:brightness-95"
             >
               고객센터 전화
             </a>
             <a
-              href="mailto:Dhlee@l-light.co.kr"
+              href="mailto:hclee@l-light.co.kr"
               className="rounded-md border border-white/35 px-6 py-3 text-sm font-semibold tracking-[0.05em] text-white transition hover:bg-white/10"
             >
               이메일 문의
@@ -198,7 +198,7 @@ function ContactPage() {
                 to="/login"
                 className="inline-block rounded-md bg-[var(--gold)] px-4 py-2 text-xs font-bold tracking-[0.05em] text-[#101a2f]"
               >
-                사업자 로그인
+                로그인
               </Link>
               <Link
                 to="/quotes/requests"
@@ -213,13 +213,13 @@ function ContactPage() {
             <p className="text-xs font-semibold tracking-[0.12em] text-[var(--muted)]">FAST ACTION</p>
             <div className="mt-3 grid gap-2">
               <a
-                href="tel:01033057949"
+                href="tel:01063583144"
                 className="rounded-md border border-[var(--line)] px-4 py-3 text-sm font-semibold text-[var(--navy)] transition hover:bg-[#f7f9fc]"
               >
                 고객센터 연결
               </a>
               <a
-                href="mailto:Dhlee@l-light.co.kr?subject=%EA%B2%AC%EC%A0%81%20%EC%9A%94%EC%B2%AD&body=%EB%AA%A8%EB%8D%B8%EB%AA%85%2F%EC%88%98%EB%9F%89%2F%EB%82%A9%EA%B8%B0%20%EC%A1%B0%EA%B1%B4%EC%9D%84%20%EC%A0%81%EC%96%B4%EC%A3%BC%EC%8B%9C%EB%A9%B4%20%EB%B9%A0%EB%A5%B4%EA%B2%8C%20%ED%9A%8C%EC%8B%A0%EB%93%9C%EB%A6%BD%EB%8B%88%EB%8B%A4."
+                href="mailto:hclee@l-light.co.kr?subject=%EA%B2%AC%EC%A0%81%20%EC%9A%94%EC%B2%AD&body=%EB%AA%A8%EB%8D%B8%EB%AA%85%2F%EC%88%98%EB%9F%89%2F%EB%82%A9%EA%B8%B0%20%EC%A1%B0%EA%B1%B4%EC%9D%84%20%EC%A0%81%EC%96%B4%EC%A3%BC%EC%8B%9C%EB%A9%B4%20%EB%B9%A0%EB%A5%B4%EA%B2%8C%20%ED%9A%8C%EC%8B%A0%EB%93%9C%EB%A6%BD%EB%8B%88%EB%8B%A4."
                 className="rounded-md border border-[var(--line)] px-4 py-3 text-sm font-semibold text-[var(--navy)] transition hover:bg-[#f7f9fc]"
               >
                 이메일로 견적 요청

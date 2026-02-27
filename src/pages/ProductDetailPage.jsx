@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, Navigate, useParams } from 'react-router-dom';
-import { getDownloadURL, ref } from 'firebase/storage';
-import { canViewWholesalePrice } from '../lib/roles';
+import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
+import { getDownloadURL, listAll, ref } from 'firebase/storage';
 import { getCatalogProductBySlug, subscribeCatalogUpdates } from '../lib/productCatalog';
-import { storage } from '../lib/firebase';
+import { commonDetailImagePath, storage } from '../lib/firebase';
 import {
   openOrderListModal,
   readOrderListItems,
@@ -11,17 +10,86 @@ import {
   writeOrderListItems
 } from '../lib/orderRequests';
 
+let commonDetailImageUrlPromise = null;
+let commonDetailImageUrlCache = null;
+let globalNoticeUrlsPromise = null;
+let globalNoticeUrlsCache = null;
+
+function loadCommonDetailImageUrl() {
+  if (!storage || !commonDetailImagePath) {
+    return Promise.resolve('');
+  }
+
+  if (commonDetailImageUrlCache !== null) {
+    return Promise.resolve(commonDetailImageUrlCache);
+  }
+
+  if (!commonDetailImageUrlPromise) {
+    commonDetailImageUrlPromise = getDownloadURL(ref(storage, commonDetailImagePath))
+      .then((url) => {
+        commonDetailImageUrlCache = url;
+        return url;
+      })
+      .catch(() => {
+        commonDetailImageUrlCache = '';
+        return '';
+      });
+  }
+
+  return commonDetailImageUrlPromise;
+}
+
+async function loadGlobalNoticeUrls() {
+  if (!storage) {
+    return [];
+  }
+
+  if (Array.isArray(globalNoticeUrlsCache)) {
+    return globalNoticeUrlsCache;
+  }
+
+  if (!globalNoticeUrlsPromise) {
+    globalNoticeUrlsPromise = listAll(ref(storage, 'products/notice'))
+      .then(async (listed) => {
+        const items = [...(listed?.items || [])].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        const urls = await Promise.all(items.map((item) => getDownloadURL(item).catch(() => '')));
+        globalNoticeUrlsCache = urls.map((url) => String(url || '').trim()).filter(Boolean).slice(0, 5);
+        return globalNoticeUrlsCache;
+      })
+      .catch(() => {
+        globalNoticeUrlsCache = [];
+        return globalNoticeUrlsCache;
+      });
+  }
+
+  return globalNoticeUrlsPromise;
+}
+
+function isImageUrl(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) {
+    return false;
+  }
+  if (text.includes('firebasestorage.googleapis.com')) {
+    return true;
+  }
+  return /\.(png|jpe?g|webp|gif|bmp|svg)(\?|#|$)/.test(text);
+}
+
 function parsePriceValue(value) {
   return Number(String(value ?? '').replace(/[^\d]/g, '')) || 0;
 }
 
 function ProductDetailPage({ user, profile }) {
   const { slug } = useParams();
+  const navigate = useNavigate();
   const [catalogVersion, setCatalogVersion] = useState(0);
   const [quantity, setQuantity] = useState(1);
   const [orderItems, setOrderItems] = useState(() => readOrderListItems());
   const [orderNotice, setOrderNotice] = useState('');
+  const [orderNoticeType, setOrderNoticeType] = useState('success');
   const [commonDetailImageUrl, setCommonDetailImageUrl] = useState('');
+  const [globalNoticeUrls, setGlobalNoticeUrls] = useState([]);
 
   useEffect(() => {
     return subscribeCatalogUpdates(() => {
@@ -38,24 +106,25 @@ function ProductDetailPage({ user, profile }) {
   useEffect(() => {
     let canceled = false;
 
-    if (!storage) {
-      setCommonDetailImageUrl('');
-      return () => {
-        canceled = true;
-      };
-    }
+    loadCommonDetailImageUrl().then((url) => {
+      if (!canceled) {
+        setCommonDetailImageUrl(url);
+      }
+    });
 
-    getDownloadURL(ref(storage, 'detail/common-detail-long-01.png'))
-      .then((url) => {
-        if (!canceled) {
-          setCommonDetailImageUrl(url);
-        }
-      })
-      .catch(() => {
-        if (!canceled) {
-          setCommonDetailImageUrl('');
-        }
-      });
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let canceled = false;
+
+    loadGlobalNoticeUrls().then((urls) => {
+      if (!canceled) {
+        setGlobalNoticeUrls(urls);
+      }
+    });
 
     return () => {
       canceled = true;
@@ -63,13 +132,36 @@ function ProductDetailPage({ user, profile }) {
   }, []);
 
   const product = useMemo(() => getCatalogProductBySlug(slug), [slug, catalogVersion]);
-  const [selectedImage, setSelectedImage] = useState(() => product?.detailImages?.[0] ?? product?.image ?? '');
-  const isWholesaleAvailable = canViewWholesalePrice(profile?.role);
-  const orderUnitPriceLabel = isWholesaleAvailable ? product?.wholesalePrice : product?.supplyPrice;
+  const [selectedImage, setSelectedImage] = useState(() => product?.image ?? product?.detailImages?.[0] ?? '');
+  const orderUnitPriceLabel = product?.supplyPrice;
   const orderUnitPriceValue = parsePriceValue(orderUnitPriceLabel);
+  const productNotices = useMemo(
+    () =>
+      [product?.notice_1, product?.notice_2, product?.notice_3, product?.notice_4, product?.notice_5]
+        .map((item) => String(item || '').trim())
+        .filter(Boolean),
+    [product]
+  );
+  const notices = productNotices.length > 0 ? productNotices : globalNoticeUrls;
+  const detailText = String(product?.detail ?? '').trim();
+  const isDetailTokenOnly = /^spec[_ -]?\d+$/i.test(detailText);
+  const detailSectionImages = useMemo(() => {
+    const list = [];
+    const first = String(product?.detailImage ?? '').trim() || commonDetailImageUrl;
+    if (first) {
+      list.push(first);
+    }
+    (product?.detailImages || []).forEach((item) => {
+      const url = String(item || '').trim();
+      if (url && !list.includes(url)) {
+        list.push(url);
+      }
+    });
+    return list;
+  }, [product, commonDetailImageUrl]);
 
   useEffect(() => {
-    setSelectedImage(product?.detailImages?.[0] ?? product?.image ?? '');
+    setSelectedImage(product?.image ?? product?.detailImages?.[0] ?? '');
     setQuantity(1);
   }, [product]);
 
@@ -80,6 +172,10 @@ function ProductDetailPage({ user, profile }) {
 
   const handleAddToOrderList = () => {
     if (!product) {
+      return;
+    }
+    if (!user) {
+      navigate('/login');
       return;
     }
 
@@ -107,7 +203,7 @@ function ProductDetailPage({ user, profile }) {
     }
 
     syncOrderItems(next);
-    setOrderNotice('상품이 발주 예정 목록에 추가되었습니다.');
+    setOrderNotice('');
     openOrderListModal();
   };
 
@@ -128,22 +224,12 @@ function ProductDetailPage({ user, profile }) {
       <section className="grid gap-6 lg:grid-cols-[1.08fr_0.92fr]">
         <div className="rounded-2xl border border-[var(--line)] bg-white p-4 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.45)] sm:p-6">
           <div className="overflow-hidden rounded-xl border border-[var(--line)]">
-            <img src={selectedImage} alt={`${product.model} 상세 이미지`} className="aspect-square w-full bg-white object-contain" />
-          </div>
-
-          <div className="mt-3 grid grid-cols-3 gap-2">
-            {product.detailImages.map((image) => (
-              <button
-                key={image}
-                type="button"
-                onClick={() => setSelectedImage(image)}
-                className={`overflow-hidden rounded-lg border transition ${
-                  selectedImage === image ? 'border-[var(--gold)]' : 'border-[var(--line)] hover:border-[#9aa6b8]'
-                }`}
-              >
-                <img src={image} alt={`${product.model} 썸네일`} className="aspect-square w-full bg-white object-contain" />
-              </button>
-            ))}
+            <img
+              src={selectedImage}
+              alt={`${product.model} 상세 이미지`}
+              decoding="async"
+              className="aspect-square w-full bg-white object-contain"
+            />
           </div>
 
         </div>
@@ -159,15 +245,8 @@ function ProductDetailPage({ user, profile }) {
 
           <div className="mt-6 rounded-xl border border-[var(--line)] bg-[#f7f9fc] p-4">
             <p className="text-sm font-semibold text-[#7c8492]">
-              공급가 : <span className="line-through">{product.supplyPrice}</span>
+              공급가 : {product.supplyPrice || '-'}
             </p>
-            {isWholesaleAvailable ? (
-              <p className="mt-1 font-brand text-3xl font-bold text-[var(--navy)]">판매가 : {product.wholesalePrice}</p>
-            ) : user ? (
-              <p className="mt-1 font-brand text-3xl font-bold text-amber-600">판매가 승인대기중</p>
-            ) : (
-              <p className="mt-1 font-brand text-3xl font-bold text-red-600">판매가 로그인 필요</p>
-            )}
             <p className="mt-1 text-xs font-semibold tracking-[0.08em] text-[var(--muted)]">부가세 별도</p>
             <p className="mt-2 text-xs font-semibold tracking-[0.06em] text-[var(--muted)]">{product.leadTime}</p>
           </div>
@@ -213,30 +292,69 @@ function ProductDetailPage({ user, profile }) {
             </div>
           </div>
 
-          <div className="mt-7 flex gap-3">
+          <div className="mt-7">
             <button
               onClick={handleAddToOrderList}
               className="rounded-md bg-[var(--gold)] px-6 py-3 text-sm font-bold tracking-[0.05em] text-[#101a2f] transition hover:brightness-95"
             >
               상품 추가 ({quantity})
             </button>
-            <button
-              onClick={() => openOrderListModal()}
-              className="rounded-md border border-[var(--navy)] px-6 py-3 text-sm font-semibold tracking-[0.05em] text-[var(--navy)] transition hover:bg-[var(--navy)] hover:text-white"
-            >
-              발주 예정 목록 ({orderItems.length})
-            </button>
           </div>
-          {orderNotice ? <p className="mt-3 text-sm font-medium text-emerald-700">{orderNotice}</p> : null}
+          {orderNotice ? (
+            <p className={`mt-3 text-sm font-medium ${orderNoticeType === 'error' ? 'text-red-600' : 'text-emerald-700'}`}>{orderNotice}</p>
+          ) : null}
         </div>
       </section>
 
-      {commonDetailImageUrl ? (
+      {notices.length > 0 || detailText || detailSectionImages.length > 0 ? (
         <section className="mt-8 rounded-2xl border border-[var(--line)] bg-white p-4 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.45)] sm:p-6">
-          <p className="text-xs font-semibold tracking-[0.12em] text-[var(--muted)]">DETAIL</p>
-          <h2 className="mt-2 font-brand text-2xl tracking-[0.05em] text-[var(--navy)]">상세 안내</h2>
-          <div className="mt-4 overflow-hidden rounded-xl border border-[var(--line)] bg-white">
-            <img src={commonDetailImageUrl} alt="공통 상세 안내 이미지" className="w-full object-contain" />
+          <p className="text-xs font-semibold tracking-[0.12em] text-[var(--muted)]">NOTICE & DETAIL</p>
+          <h2 className="mt-2 font-brand text-2xl tracking-[0.05em] text-[var(--navy)]">상품 안내</h2>
+
+          {notices.length > 0 ? (
+            <div className="mt-4 space-y-2">
+              {notices.map((notice, index) => (
+                isImageUrl(notice) ? (
+                  <div key={`${index}-${notice}`} className="overflow-hidden rounded-lg border border-[var(--line)] bg-white">
+                    <img
+                      src={notice}
+                      alt={`notice-${index + 1}`}
+                      loading="lazy"
+                      decoding="async"
+                      className="w-full object-contain"
+                    />
+                  </div>
+                ) : (
+                  <div key={`${index}-${notice}`} className="rounded-lg border border-[var(--line)] bg-[#f8fbff] px-4 py-3 text-sm font-medium text-[var(--ink)]">
+                    {notice}
+                  </div>
+                )
+              ))}
+            </div>
+          ) : null}
+
+          <div className="mt-5 rounded-xl border border-[var(--line)] bg-white p-4">
+            <p className="text-xs font-semibold tracking-[0.1em] text-[var(--muted)]">DETAIL</p>
+
+            {detailText && !isDetailTokenOnly ? (
+              <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-[var(--muted)]">{detailText}</p>
+            ) : null}
+
+            {detailSectionImages.length > 0 ? (
+              <div className={detailText && !isDetailTokenOnly ? 'mt-4 space-y-3' : 'mt-3 space-y-3'}>
+                {detailSectionImages.map((imageUrl, index) => (
+                  <div key={`${index}-${imageUrl}`} className="overflow-hidden rounded-xl border border-[var(--line)] bg-white">
+                    <img
+                      src={imageUrl}
+                      alt={`${product.model} 상세 안내 ${index + 1}`}
+                      loading="lazy"
+                      decoding="async"
+                      className="w-full object-contain"
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
         </section>
       ) : null}

@@ -32,10 +32,13 @@ import {
 import { db, isFirebaseConfigured, storage } from '../lib/firebase';
 import { products as sampleProducts } from '../data/products';
 import { USER_ROLES, resolveRole, roleLabel } from '../lib/roles';
-import { readOrderRequests, subscribeOrderUpdates } from '../lib/orderRequests';
+import { readOrderRequests, refreshOrderRequests, subscribeOrderUpdates, updateOrderRequestStatus } from '../lib/orderRequests';
+import { ORDER_STATUS_CANCELED, ORDER_STATUS_FLOW, normalizeOrderStatus } from '../lib/orderStatus';
 import {
+  backfillCatalogDetailFields,
   getCatalogProducts,
   normalizeSlug,
+  optimizeCatalogStorageImages,
   subscribeCatalogUpdates,
   syncCatalogProductsToFirestoreFromThumbnails,
   upsertCatalogProduct
@@ -50,12 +53,10 @@ const ADMIN_TABS = [
 ];
 
 const ROLE_COLORS = {
-  [USER_ROLES.PENDING]: '#f59e0b',
+  [USER_ROLES.GENERAL]: '#7c8492',
   [USER_ROLES.ENTERPRISE]: '#059669',
   [USER_ROLES.ADMIN]: '#0284c7'
 };
-
-const ORDER_STATUS = ['접수대기', '검토중', '출고완료'];
 
 const EMPTY_PRODUCT_FORM = {
   brand: 'MEAN WELL',
@@ -70,6 +71,13 @@ const EMPTY_PRODUCT_FORM = {
   detailImage1: '',
   detailImage2: '',
   detailImage3: '',
+  detailImage: '',
+  notice_1: '',
+  notice_2: '',
+  notice_3: '',
+  notice_4: '',
+  notice_5: '',
+  detail: '',
   description: '',
   features: '',
   specInput: '',
@@ -123,11 +131,14 @@ function formatDateTime(value) {
 }
 
 function statusClass(status) {
-  if (status === '출고완료') {
+  if (status === '배송완료' || status === '출고완료') {
     return 'border-emerald-300 bg-emerald-50 text-emerald-700';
   }
-  if (status === '검토중') {
+  if (status === '입금확인중' || status === '배송준비중' || status === '검토중') {
     return 'border-sky-300 bg-sky-50 text-sky-700';
+  }
+  if (status === ORDER_STATUS_CANCELED) {
+    return 'border-red-300 bg-red-50 text-red-700';
   }
   return 'border-amber-300 bg-amber-50 text-amber-700';
 }
@@ -139,6 +150,69 @@ function cleanFeatures(value) {
     .filter(Boolean);
 }
 
+async function optimizeImageFile(file) {
+  if (!file || !String(file.type || '').startsWith('image/')) {
+    return file;
+  }
+
+  const mimeType = String(file.type || '').toLowerCase();
+  if (!['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(mimeType)) {
+    return file;
+  }
+
+  if (file.size <= 350 * 1024) {
+    return file;
+  }
+
+  try {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('file-read-failed'));
+      reader.readAsDataURL(file);
+    });
+
+    const image = await new Promise((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error('image-load-failed'));
+      element.src = dataUrl;
+    });
+
+    const maxSide = 1280;
+    const scale = Math.min(1, maxSide / image.width, maxSide / image.height);
+    const targetWidth = Math.max(1, Math.round(image.width * scale));
+    const targetHeight = Math.max(1, Math.round(image.height * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+      return file;
+    }
+
+    context.drawImage(image, 0, 0, targetWidth, targetHeight);
+
+    const blob = await new Promise((resolve) => {
+      canvas.toBlob(resolve, 'image/webp', 0.52);
+    });
+
+    if (!blob || blob.size >= file.size * 0.97) {
+      return file;
+    }
+
+    const baseName = String(file.name || 'image').replace(/\.[^.]+$/, '');
+    return new File([blob], `${baseName}.webp`, {
+      type: 'image/webp',
+      lastModified: Date.now()
+    });
+  } catch {
+    return file;
+  }
+}
+
 function AdminPage({ user, profile, authReady }) {
   const [activeTab, setActiveTab] = useState('product-status');
   const [catalogProducts, setCatalogProducts] = useState(() => getCatalogProducts());
@@ -148,14 +222,11 @@ function AdminPage({ user, profile, authReady }) {
   const [memberError, setMemberError] = useState('');
   const [updatingId, setUpdatingId] = useState('');
 
-  const [orders, setOrders] = useState([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersError, setOrdersError] = useState('');
   const [orderRequests, setOrderRequests] = useState(() => readOrderRequests());
-
-  const [fxRate, setFxRate] = useState(null);
-  const [fxUpdatedAt, setFxUpdatedAt] = useState('');
-  const [fxError, setFxError] = useState('');
+  const [statusUpdatingRequestId, setStatusUpdatingRequestId] = useState('');
+  const [detailRequest, setDetailRequest] = useState(null);
 
   const [productForm, setProductForm] = useState(EMPTY_PRODUCT_FORM);
   const [registerNotice, setRegisterNotice] = useState('');
@@ -164,7 +235,10 @@ function AdminPage({ user, profile, authReady }) {
   // ✅ 이미지 업로드 상태
   const [uploadingField, setUploadingField] = useState('');
   const [uploadProgressText, setUploadProgressText] = useState('');
+  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0, path: '' });
   const [syncingThumbnails, setSyncingThumbnails] = useState(false);
+  const [optimizingCatalogImages, setOptimizingCatalogImages] = useState(false);
+  const [backfillingCatalogDetails, setBackfillingCatalogDetails] = useState(false);
 
   const isAdmin = authReady && profile?.role === USER_ROLES.ADMIN;
 
@@ -180,7 +254,7 @@ function AdminPage({ user, profile, authReady }) {
 
   const roleStats = useMemo(() => {
     const base = {
-      [USER_ROLES.PENDING]: 0,
+      [USER_ROLES.GENERAL]: 0,
       [USER_ROLES.ENTERPRISE]: 0,
       [USER_ROLES.ADMIN]: 0
     };
@@ -195,7 +269,7 @@ function AdminPage({ user, profile, authReady }) {
 
   const roleChartData = useMemo(
     () => [
-      { name: '승인 대기중', value: roleStats[USER_ROLES.PENDING], color: ROLE_COLORS[USER_ROLES.PENDING] },
+      { name: '일반 회원', value: roleStats[USER_ROLES.GENERAL], color: ROLE_COLORS[USER_ROLES.GENERAL] },
       { name: '기업 회원', value: roleStats[USER_ROLES.ENTERPRISE], color: ROLE_COLORS[USER_ROLES.ENTERPRISE] },
       { name: '관리자', value: roleStats[USER_ROLES.ADMIN], color: ROLE_COLORS[USER_ROLES.ADMIN] }
     ],
@@ -258,18 +332,6 @@ function AdminPage({ user, profile, authReady }) {
     [catalogProducts]
   );
 
-  const orderSummary = useMemo(() => {
-    const totalAmount = orders.reduce((sum, row) => sum + row.total, 0);
-    const totalItems = orders.reduce((sum, row) => sum + row.totalProducts, 0);
-
-    return {
-      count: orders.length,
-      totalAmount,
-      avgAmount: orders.length ? Math.round(totalAmount / orders.length) : 0,
-      totalItems
-    };
-  }, [orders]);
-
   const orderRequestsByType = useMemo(
     () => ({
       orders: orderRequests.filter((row) => row.type !== 'quote'),
@@ -291,6 +353,26 @@ function AdminPage({ user, profile, authReady }) {
     return {
       count: orderRequestsByType.quotes.length,
       totalAmount
+    };
+  }, [orderRequestsByType]);
+
+  const orderSummary = useMemo(() => {
+    const source = orderRequestsByType.orders;
+    const totalAmount = source.reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
+    const totalItems = source.reduce(
+      (sum, row) => sum + (row.items || []).reduce((itemSum, item) => itemSum + Number(item?.quantity || 0), 0),
+      0
+    );
+    const completedCount = source.filter((row) => normalizeOrderStatus(row.status) === '배송완료').length;
+    const canceledCount = source.filter((row) => normalizeOrderStatus(row.status) === ORDER_STATUS_CANCELED).length;
+
+    return {
+      count: source.length,
+      totalAmount,
+      avgAmount: source.length ? Math.round(totalAmount / source.length) : 0,
+      totalItems,
+      completedCount,
+      canceledCount
     };
   }, [orderRequestsByType]);
 
@@ -321,75 +403,21 @@ function AdminPage({ user, profile, authReady }) {
     }
   }, []);
 
-  const loadExchangeRate = useCallback(async () => {
-    try {
-      setFxError('');
-      const response = await fetch('https://open.er-api.com/v6/latest/USD');
-
-      if (!response.ok) {
-        throw new Error('exchange-rate-fetch-failed');
-      }
-
-      const data = await response.json();
-      const value = Number(data?.rates?.KRW ?? 0);
-      if (!value) {
-        throw new Error('exchange-rate-invalid');
-      }
-
-      setFxRate(value);
-      setFxUpdatedAt(data?.time_last_update_utc ?? '');
-    } catch (error) {
-      setFxError('환율 API를 불러오지 못했습니다. 잠시 후 다시 시도하세요.');
-    }
-  }, []);
-
   const loadOrders = useCallback(async () => {
+    if (!user || !profile?.role) {
+      return;
+    }
     try {
       setOrdersLoading(true);
       setOrdersError('');
-
-      const response = await fetch('https://dummyjson.com/carts?limit=18');
-      if (!response.ok) {
-        throw new Error('orders-fetch-failed');
-      }
-
-      const data = await response.json();
-      const mapped = (data?.carts ?? []).map((cart) => {
-        const status = ORDER_STATUS[cart.id % ORDER_STATUS.length];
-
-        return {
-          id: cart.id,
-          userId: cart.userId,
-          total: Number(cart.total ?? 0),
-          discountedTotal: Number(cart.discountedTotal ?? 0),
-          totalProducts: Number(cart.totalProducts ?? 0),
-          totalQuantity: Number(cart.totalQuantity ?? 0),
-          status,
-          createdAt: new Date(Date.now() - cart.id * 86400000)
-        };
-      });
-
-      setOrders(mapped);
-    } catch (error) {
-      setOrdersError('발주 API를 불러오지 못했습니다. 기본 데이터로 표시합니다.');
-
-      const source = catalogProducts.length ? catalogProducts : sampleProducts;
-      const fallback = source.map((product, index) => ({
-        id: index + 1,
-        userId: 100 + index,
-        total: parsePrice(product.wholesalePrice) * 5,
-        discountedTotal: parsePrice(product.wholesalePrice) * 4,
-        totalProducts: 1,
-        totalQuantity: 5,
-        status: ORDER_STATUS[index % ORDER_STATUS.length],
-        createdAt: new Date(Date.now() - index * 86400000)
-      }));
-
-      setOrders(fallback);
+      await refreshOrderRequests({ uid: user.uid, role: profile.role });
+      setOrderRequests(readOrderRequests());
+    } catch {
+      setOrdersError('주문 데이터를 새로고침하지 못했습니다.');
     } finally {
       setOrdersLoading(false);
     }
-  }, [catalogProducts]);
+  }, [user, profile?.role]);
 
   useEffect(() => {
     return subscribeCatalogUpdates(() => {
@@ -417,10 +445,9 @@ function AdminPage({ user, profile, authReady }) {
     }
 
     loadMembers();
-    loadExchangeRate();
     setCatalogProducts(getCatalogProducts());
     setOrderRequests(readOrderRequests());
-  }, [isAdmin, loadExchangeRate, loadMembers]);
+  }, [isAdmin, loadMembers]);
 
   useEffect(() => {
     if (!isAdmin || activeTab !== 'orders') {
@@ -441,8 +468,7 @@ function AdminPage({ user, profile, authReady }) {
 
       await updateDoc(doc(db, 'businessUsers', member.id), {
         role: nextRole,
-        approved: nextRole !== USER_ROLES.PENDING,
-        approvedAt: nextRole === USER_ROLES.PENDING ? null : serverTimestamp()
+        approved: true
       });
 
       setMembers((prev) =>
@@ -451,7 +477,7 @@ function AdminPage({ user, profile, authReady }) {
             ? {
                 ...row,
                 role: nextRole,
-                approved: nextRole !== USER_ROLES.PENDING
+                approved: true
               }
             : row
         )
@@ -484,6 +510,13 @@ function AdminPage({ user, profile, authReady }) {
       detailImage1: template.detailImages?.[0] ?? template.image ?? '',
       detailImage2: template.detailImages?.[1] ?? '',
       detailImage3: template.detailImages?.[2] ?? '',
+      detailImage: template.detailImage ?? '',
+      notice_1: template.notice_1 ?? template.notice1 ?? '',
+      notice_2: template.notice_2 ?? template.notice2 ?? '',
+      notice_3: template.notice_3 ?? template.notice3 ?? '',
+      notice_4: template.notice_4 ?? template.notice4 ?? '',
+      notice_5: template.notice_5 ?? template.notice5 ?? '',
+      detail: template.detail ?? template.detailText ?? '',
       description: template.description ?? '',
       features: (template.features ?? []).join(', '),
       specInput: template.specs?.input ?? '',
@@ -533,10 +566,18 @@ function AdminPage({ user, profile, authReady }) {
       setRegisterError('');
       setRegisterNotice('');
       setUploadingField(field);
-      setUploadProgressText('이미지 업로드 중...');
+      setUploadProgressText('이미지 최적화 중...');
+
+      const optimizedFile = await optimizeImageFile(file);
+      const reducedRatio = Math.round((1 - optimizedFile.size / file.size) * 100);
+      setUploadProgressText(
+        optimizedFile !== file && reducedRatio > 0
+          ? `이미지 업로드 중... (약 ${reducedRatio}% 용량 감소)`
+          : '이미지 업로드 중...'
+      );
 
       const folderKey = normalizeSlug(productForm.slug || productForm.model || 'unknown');
-      const url = await uploadImageToStorage(file, `products/${folderKey}`);
+      const url = await uploadImageToStorage(optimizedFile, `products/${folderKey}`);
 
       setProductForm((prev) => ({
         ...prev,
@@ -584,6 +625,13 @@ function AdminPage({ user, profile, authReady }) {
       wholesalePrice: productForm.wholesalePrice.trim(),
       image: mainImage,
       detailImages: detailImages.length ? detailImages : [mainImage],
+      detailImage: productForm.detailImage.trim(),
+      notice_1: productForm.notice_1.trim(),
+      notice_2: productForm.notice_2.trim(),
+      notice_3: productForm.notice_3.trim(),
+      notice_4: productForm.notice_4.trim(),
+      notice_5: productForm.notice_5.trim(),
+      detail: productForm.detail.trim(),
       description: productForm.description.trim(),
       features: cleanFeatures(productForm.features),
       specs: {
@@ -622,6 +670,91 @@ function AdminPage({ user, profile, authReady }) {
       setRegisterError('썸네일 동기화 실패: Firestore/Storage 권한 또는 경로(thumbnails)를 확인해 주세요.');
     } finally {
       setSyncingThumbnails(false);
+    }
+  };
+
+  const onChangeOrderRequestStatus = async (request, nextStatus) => {
+    if (!request || !nextStatus || request.status === nextStatus) {
+      return;
+    }
+
+    try {
+      setStatusUpdatingRequestId(request.id);
+      setOrdersError('');
+      await updateOrderRequestStatus(request, nextStatus);
+    } catch {
+      setOrdersError('주문 상태 변경에 실패했습니다.');
+    } finally {
+      setStatusUpdatingRequestId('');
+    }
+  };
+
+  const openRequestDetail = (request) => {
+    setDetailRequest(request || null);
+  };
+
+  const closeRequestDetail = () => {
+    setDetailRequest(null);
+  };
+
+  const onOptimizeCatalogImages = async () => {
+    try {
+      setOptimizingCatalogImages(true);
+      setRegisterError('');
+      setRegisterNotice('');
+      setUploadProgressText('스토리지 이미지 최적화 준비 중...');
+      setUploadProgress({ current: 0, total: 0, path: '' });
+
+      const result = await optimizeCatalogStorageImages({
+        folders: ['products', 'thumbnails'],
+        onProgress: ({ current, total, optimized, failed, path }) => {
+          setUploadProgress({ current, total, path: path || '' });
+          setUploadProgressText(
+            `이미지 최적화 진행 중... ${current}/${total} (최적화 ${optimized}건, 실패 ${failed}건) - ${path}`
+          );
+        }
+      });
+
+      const savedMb = (result.bytesSaved / 1024 / 1024).toFixed(2);
+      setRegisterNotice(
+        `이미지 최적화 완료: 전체 ${result.total}건, 최적화 ${result.optimized}건, 스킵 ${result.skipped}건, 실패 ${result.failed}건, 절감 ${savedMb}MB`
+      );
+    } catch {
+      setRegisterError('스토리지 이미지 일괄 최적화에 실패했습니다. Storage 권한/경로를 확인해 주세요.');
+    } finally {
+      setUploadProgressText('');
+      setUploadProgress({ current: 0, total: 0, path: '' });
+      setOptimizingCatalogImages(false);
+    }
+  };
+
+  const onBackfillCatalogDetails = async () => {
+    try {
+      setBackfillingCatalogDetails(true);
+      setRegisterError('');
+      setRegisterNotice('');
+      setUploadProgressText('기존 상품 notice/detail 보정 준비 중...');
+      setUploadProgress({ current: 0, total: 0, path: '' });
+
+      const result = await backfillCatalogDetailFields({
+        onProgress: ({ current, total, updated, failed, slug }) => {
+          setUploadProgress({ current, total, path: slug || '' });
+          setUploadProgressText(
+            `기존 상품 보정 중... ${current}/${total} (갱신 ${updated}건, 실패 ${failed}건) - ${slug}`
+          );
+        }
+      });
+
+      setCatalogProducts(getCatalogProducts());
+      setRegisterNotice(
+        `기존 상품 보정 완료: 전체 ${result.total}건, 갱신 ${result.updated}건, 스킵 ${result.skipped}건, 실패 ${result.failed}건`
+      );
+    } catch {
+      setRegisterError('기존 상품 notice/detail 일괄 보정에 실패했습니다. Firestore 권한을 확인해 주세요.');
+    } finally {
+      setUploadProgressText('');
+      setUploadProgress({ current: 0, total: 0, path: '' });
+      setBackfillingCatalogDetails(false);
     }
   };
 
@@ -666,6 +799,9 @@ function AdminPage({ user, profile, authReady }) {
     return <Navigate to="/" replace />;
   }
 
+  const isProgressIndeterminate = Boolean(uploadProgressText) && uploadProgress.total === 0;
+  const progressPercent = uploadProgress.total > 0 ? Math.min(100, Math.round((uploadProgress.current / uploadProgress.total) * 100)) : 0;
+
   return (
     <main className="mx-auto min-h-screen w-full max-w-[1320px] px-6 pb-20 pt-28 sm:px-10">
       <section className="overflow-hidden rounded-2xl border border-[var(--line)] bg-white shadow-[0_26px_55px_-38px_rgba(15,23,42,0.55)]">
@@ -679,14 +815,33 @@ function AdminPage({ user, profile, authReady }) {
               </p>
             </div>
             <div className="rounded-xl border border-white/25 bg-white/10 px-4 py-3">
-              <p className="text-[11px] font-semibold tracking-[0.1em] text-white/70">LIVE USD/KRW</p>
-              <p className="mt-1 font-brand text-2xl">{fxRate ? formatNumber(fxRate) : '-'}</p>
-              <p className="mt-1 text-[11px] text-white/65">{fxUpdatedAt ? fxUpdatedAt : '환율 업데이트 대기중'}</p>
+              <p className="text-[11px] font-semibold tracking-[0.1em] text-white/70">LIVE ORDER REQUESTS</p>
+              <p className="mt-1 font-brand text-2xl">{formatNumber(orderRequestSummary.count)}</p>
+              <p className="mt-1 text-[11px] text-white/65">실시간 Firestore 주문요청 기준</p>
             </div>
           </div>
         </div>
 
         <div className="space-y-6 p-6 sm:p-8">
+          {uploadProgressText ? (
+            <section className="rounded-xl border border-amber-200 bg-amber-50/70 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-amber-800">작업 진행중</p>
+                <p className="text-xs font-bold text-amber-900">
+                  {isProgressIndeterminate ? '집계중...' : `${progressPercent}% (${uploadProgress.current}/${uploadProgress.total})`}
+                </p>
+              </div>
+              <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-amber-100">
+                <div
+                  className={`h-full rounded-full bg-amber-500 transition-all ${isProgressIndeterminate ? 'animate-pulse' : ''}`}
+                  style={{ width: isProgressIndeterminate ? '35%' : `${progressPercent}%` }}
+                />
+              </div>
+              <p className="mt-2 text-xs font-medium text-amber-800">{uploadProgressText}</p>
+              {uploadProgress.path ? <p className="mt-1 truncate text-[11px] text-amber-700">{uploadProgress.path}</p> : null}
+            </section>
+          ) : null}
+
           <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <article className="rounded-xl border border-[var(--line)] bg-[#f8fbff] p-4">
               <div className="flex items-start justify-between">
@@ -706,10 +861,10 @@ function AdminPage({ user, profile, authReady }) {
 
             <article className="rounded-xl border border-[var(--line)] bg-[#f8fbff] p-4">
               <div className="flex items-start justify-between">
-                <p className="text-xs font-semibold tracking-[0.1em] text-[var(--muted)]">승인 대기</p>
+                <p className="text-xs font-semibold tracking-[0.1em] text-[var(--muted)]">일반 회원</p>
                 <AlertTriangle className="h-4 w-4 text-amber-500" />
               </div>
-              <p className="mt-3 font-brand text-3xl text-[var(--navy)]">{formatNumber(roleStats[USER_ROLES.PENDING])}</p>
+              <p className="mt-3 font-brand text-3xl text-[var(--navy)]">{formatNumber(roleStats[USER_ROLES.GENERAL])}</p>
             </article>
 
             <article className="rounded-xl border border-[var(--line)] bg-[#f8fbff] p-4">
@@ -861,6 +1016,8 @@ function AdminPage({ user, profile, authReady }) {
                         <img
                           src={productForm.image}
                           alt="메인 이미지 미리보기"
+                          loading="lazy"
+                          decoding="async"
                           className="h-16 w-16 rounded-md border border-[var(--line)] object-cover"
                         />
                         <p className="min-w-0 flex-1 truncate text-xs text-[var(--muted)]">{productForm.image}</p>
@@ -887,6 +1044,8 @@ function AdminPage({ user, profile, authReady }) {
                       <img
                         src={productForm.detailImage1}
                         alt="상세 이미지 1 미리보기"
+                        loading="lazy"
+                        decoding="async"
                         className="mt-2 h-16 w-full rounded-md border border-[var(--line)] object-cover"
                       />
                     ) : null}
@@ -911,6 +1070,8 @@ function AdminPage({ user, profile, authReady }) {
                       <img
                         src={productForm.detailImage2}
                         alt="상세 이미지 2 미리보기"
+                        loading="lazy"
+                        decoding="async"
                         className="mt-2 h-16 w-full rounded-md border border-[var(--line)] object-cover"
                       />
                     ) : null}
@@ -935,6 +1096,8 @@ function AdminPage({ user, profile, authReady }) {
                       <img
                         src={productForm.detailImage3}
                         alt="상세 이미지 3 미리보기"
+                        loading="lazy"
+                        decoding="async"
                         className="mt-2 h-20 w-full rounded-md border border-[var(--line)] object-cover"
                       />
                     ) : null}
@@ -944,6 +1107,47 @@ function AdminPage({ user, profile, authReady }) {
                     <label className="form-label">설명</label>
                     <textarea className="form-input min-h-24" value={productForm.description} onChange={onChangeProductForm('description')} />
                   </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="form-label">상세 안내 이미지 URL (detailImage)</label>
+                    <input
+                      className="form-input"
+                      value={productForm.detailImage}
+                      onChange={onChangeProductForm('detailImage')}
+                      placeholder="상세 섹션 하단에 표시할 이미지 URL"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="form-label">notice_1</label>
+                    <input className="form-input" value={productForm.notice_1} onChange={onChangeProductForm('notice_1')} />
+                  </div>
+                  <div>
+                    <label className="form-label">notice_2</label>
+                    <input className="form-input" value={productForm.notice_2} onChange={onChangeProductForm('notice_2')} />
+                  </div>
+                  <div>
+                    <label className="form-label">notice_3</label>
+                    <input className="form-input" value={productForm.notice_3} onChange={onChangeProductForm('notice_3')} />
+                  </div>
+                  <div>
+                    <label className="form-label">notice_4</label>
+                    <input className="form-input" value={productForm.notice_4} onChange={onChangeProductForm('notice_4')} />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="form-label">notice_5</label>
+                    <input className="form-input" value={productForm.notice_5} onChange={onChangeProductForm('notice_5')} />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="form-label">detail</label>
+                    <textarea
+                      className="form-input min-h-24"
+                      value={productForm.detail}
+                      onChange={onChangeProductForm('detail')}
+                      placeholder="상세 섹션 본문 텍스트"
+                    />
+                  </div>
+
                   <div className="sm:col-span-2">
                     <label className="form-label">특징 (쉼표 또는 줄바꿈 구분)</label>
                     <textarea className="form-input min-h-20" value={productForm.features} onChange={onChangeProductForm('features')} />
@@ -977,7 +1181,7 @@ function AdminPage({ user, profile, authReady }) {
 
                 <div className="mt-4 flex flex-wrap gap-2">
                   <button
-                    disabled={Boolean(uploadingField) || syncingThumbnails}
+                    disabled={Boolean(uploadingField) || syncingThumbnails || optimizingCatalogImages || backfillingCatalogDetails}
                     className="rounded-md bg-[var(--gold)] px-5 py-2.5 text-sm font-bold tracking-[0.06em] text-[#101a2f] disabled:opacity-60"
                   >
                     상품 업로드
@@ -985,10 +1189,26 @@ function AdminPage({ user, profile, authReady }) {
                   <button
                     type="button"
                     onClick={onSyncThumbnailsToFirestore}
-                    disabled={syncingThumbnails || Boolean(uploadingField)}
+                    disabled={syncingThumbnails || optimizingCatalogImages || backfillingCatalogDetails || Boolean(uploadingField)}
                     className="rounded-md border border-[var(--line)] bg-white px-5 py-2.5 text-sm font-semibold tracking-[0.04em] text-[var(--navy)] disabled:opacity-60"
                   >
                     {syncingThumbnails ? 'thumbnails 동기화 중...' : 'thumbnails -> Firestore 동기화'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onOptimizeCatalogImages}
+                    disabled={optimizingCatalogImages || syncingThumbnails || backfillingCatalogDetails || Boolean(uploadingField)}
+                    className="rounded-md border border-[var(--line)] bg-white px-5 py-2.5 text-sm font-semibold tracking-[0.04em] text-[var(--navy)] disabled:opacity-60"
+                  >
+                    {optimizingCatalogImages ? '스토리지 이미지 최적화 중...' : '스토리지 이미지 일괄 최적화'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onBackfillCatalogDetails}
+                    disabled={backfillingCatalogDetails || optimizingCatalogImages || syncingThumbnails || Boolean(uploadingField)}
+                    className="rounded-md border border-[var(--line)] bg-white px-5 py-2.5 text-sm font-semibold tracking-[0.04em] text-[var(--navy)] disabled:opacity-60"
+                  >
+                    {backfillingCatalogDetails ? '기존 상품 보정 중...' : '기존 상품 notice/detail 일괄 보정'}
                   </button>
                 </div>
 
@@ -1070,6 +1290,8 @@ function AdminPage({ user, profile, authReady }) {
                           <img
                             src={item.image}
                             alt={`${item.model} 썸네일`}
+                            loading="lazy"
+                            decoding="async"
                             className="h-14 w-14 rounded-md border border-[var(--line)] object-cover"
                           />
                         </td>
@@ -1160,11 +1382,11 @@ function AdminPage({ user, profile, authReady }) {
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap gap-1.5">
                             <button
-                              onClick={() => onSetRole(member, USER_ROLES.PENDING)}
-                              disabled={updatingId === member.id || member.role === USER_ROLES.PENDING}
-                              className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-700 disabled:opacity-50"
+                              onClick={() => onSetRole(member, USER_ROLES.GENERAL)}
+                              disabled={updatingId === member.id || member.role === USER_ROLES.GENERAL}
+                              className="rounded-md border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50"
                             >
-                              승인대기
+                              일반회원
                             </button>
                             <button
                               onClick={() => onSetRole(member, USER_ROLES.ENTERPRISE)}
@@ -1215,39 +1437,64 @@ function AdminPage({ user, profile, authReady }) {
                 </p>
 
                 <div className="mt-4 overflow-x-auto rounded-xl border border-[var(--line)] bg-white">
-                  <table className="min-w-[1080px] w-full border-collapse text-left text-sm">
+                  <table className="min-w-[1320px] w-full border-collapse text-left text-sm">
                     <thead className="bg-[var(--navy)] text-white">
                       <tr>
                         <th className="px-4 py-3 font-semibold">요청번호</th>
+                        <th className="px-4 py-3 font-semibold">상세</th>
                         <th className="px-4 py-3 font-semibold">구분</th>
                         <th className="px-4 py-3 font-semibold">기업/이메일</th>
                         <th className="px-4 py-3 font-semibold">품목</th>
-                        <th className="px-4 py-3 font-semibold">결제금액(부가세포함)</th>
+                        <th className="px-4 py-3 text-right font-semibold">결제금액</th>
                         <th className="px-4 py-3 font-semibold">상태</th>
+                        <th className="px-4 py-3 font-semibold">상태변경</th>
                         <th className="px-4 py-3 font-semibold">요청시각</th>
                       </tr>
                     </thead>
                     <tbody>
                       {orderRequestsByType.orders.map((request) => (
                         <tr key={request.id} className="border-t border-[var(--line)] bg-white">
-                          <td className="px-4 py-3 font-semibold text-[var(--navy)]">{request.id}</td>
-                          <td className="px-4 py-3 text-[var(--ink)]">주문하기</td>
-                          <td className="px-4 py-3 text-[var(--ink)]">
-                            <p>{request.customer?.companyName || '-'}</p>
-                            <p className="text-xs text-[var(--muted)]">{request.customer?.email || '-'}</p>
+                          <td className="whitespace-nowrap px-4 py-3 align-top font-semibold text-[var(--navy)]">{request.id}</td>
+                          <td className="whitespace-nowrap px-4 py-3 align-top">
+                            <button
+                              type="button"
+                              onClick={() => openRequestDetail(request)}
+                              className="rounded-md border border-[var(--navy)] px-3 py-1.5 text-xs font-semibold text-[var(--navy)] transition hover:bg-[var(--navy)] hover:text-white"
+                            >
+                              상세 보기
+                            </button>
                           </td>
-                          <td className="px-4 py-3 text-[var(--ink)]">
+                          <td className="whitespace-nowrap px-4 py-3 align-top text-[var(--ink)]">주문하기</td>
+                          <td className="min-w-[180px] px-4 py-3 align-top text-[var(--ink)]">
+                            <p>{request.customer?.companyName || '-'}</p>
+                            <p className="break-all text-xs text-[var(--muted)]">{request.customer?.email || '-'}</p>
+                          </td>
+                          <td className="max-w-[280px] px-4 py-3 align-top text-[var(--ink)]">
                             {(request.items || []).map((item) => `${item.model} x${item.quantity}`).join(', ')}
                           </td>
-                          <td className="px-4 py-3 text-[var(--ink)]">{formatNumber(request.totalAmount)}원</td>
-                          <td className="px-4 py-3 text-[var(--ink)]">{request.status || '-'}</td>
-                          <td className="px-4 py-3 text-[var(--ink)]">{formatDateTime(request.requestedAt)}</td>
+                          <td className="whitespace-nowrap px-4 py-3 align-top text-right text-[var(--ink)]">{formatNumber(request.totalAmount)}원</td>
+                          <td className="whitespace-nowrap px-4 py-3 align-top text-[var(--ink)]">{normalizeOrderStatus(request.status)}</td>
+                          <td className="whitespace-nowrap px-4 py-3 align-top">
+                            <select
+                              value={normalizeOrderStatus(request.status)}
+                              onChange={(event) => onChangeOrderRequestStatus(request, event.target.value)}
+                              disabled={statusUpdatingRequestId === request.id}
+                              className="rounded-md border border-[var(--line)] bg-white px-2.5 py-1.5 text-xs font-semibold text-[var(--navy)] disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {[...ORDER_STATUS_FLOW, ORDER_STATUS_CANCELED].map((status) => (
+                                <option key={status} value={status}>
+                                  {status}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3 align-top text-[var(--ink)]">{formatDateTime(request.requestedAt)}</td>
                         </tr>
                       ))}
 
                       {orderRequestsByType.orders.length === 0 ? (
                         <tr>
-                          <td className="px-4 py-6 text-[var(--muted)]" colSpan={7}>
+                          <td className="px-4 py-6 text-[var(--muted)]" colSpan={9}>
                             접수된 주문 요청이 없습니다.
                           </td>
                         </tr>
@@ -1264,13 +1511,13 @@ function AdminPage({ user, profile, authReady }) {
                     className="inline-flex items-center gap-2 rounded-md border border-[var(--line)] bg-white px-4 py-2 text-xs font-semibold tracking-[0.06em] text-[var(--navy)]"
                   >
                     <RefreshCcw className="h-3.5 w-3.5" />
-                    발주 새로고침
+                    주문 새로고침
                   </button>
                   <span className="rounded-md bg-[var(--navy)] px-3 py-2 text-xs font-semibold tracking-[0.06em] text-white">
                     주문 {orderSummary.count}건
                   </span>
                 </div>
-                <p className="text-xs text-[var(--muted)]">External API: dummyjson.com / open.er-api.com</p>
+                <p className="text-xs text-[var(--muted)]">Firestore `orderRequests` 실데이터</p>
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -1287,10 +1534,8 @@ function AdminPage({ user, profile, authReady }) {
                   <p className="mt-3 font-brand text-2xl text-[var(--navy)]">{formatNumber(orderSummary.totalItems)}</p>
                 </article>
                 <article className="rounded-xl border border-[var(--line)] bg-[#f8fbff] p-4">
-                  <p className="text-xs font-semibold tracking-[0.1em] text-[var(--muted)]">환율 반영가(USD)</p>
-                  <p className="mt-3 font-brand text-2xl text-[var(--navy)]">
-                    {fxRate ? `$${formatNumber(Math.round(orderSummary.totalAmount / fxRate))}` : '-'}
-                  </p>
+                  <p className="text-xs font-semibold tracking-[0.1em] text-[var(--muted)]">배송완료 건수</p>
+                  <p className="mt-3 font-brand text-2xl text-[var(--navy)]">{formatNumber(orderSummary.completedCount)}</p>
                 </article>
               </div>
 
@@ -1299,36 +1544,45 @@ function AdminPage({ user, profile, authReady }) {
                   <thead className="bg-[var(--navy)] text-white">
                     <tr>
                       <th className="px-4 py-3 font-semibold">주문번호</th>
-                      <th className="px-4 py-3 font-semibold">고객ID</th>
+                      <th className="px-4 py-3 font-semibold">기업/이메일</th>
                       <th className="px-4 py-3 font-semibold">품목수</th>
                       <th className="px-4 py-3 font-semibold">수량</th>
                       <th className="px-4 py-3 font-semibold">주문금액</th>
-                      <th className="px-4 py-3 font-semibold">할인금액</th>
                       <th className="px-4 py-3 font-semibold">상태</th>
                       <th className="px-4 py-3 font-semibold">주문일</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {orders.map((order) => (
-                      <tr key={order.id} className="border-t border-[var(--line)] bg-white">
-                        <td className="px-4 py-3 font-semibold text-[var(--navy)]">#{order.id}</td>
-                        <td className="px-4 py-3 text-[var(--ink)]">U-{order.userId}</td>
-                        <td className="px-4 py-3 text-[var(--ink)]">{order.totalProducts}</td>
-                        <td className="px-4 py-3 text-[var(--ink)]">{order.totalQuantity}</td>
-                        <td className="px-4 py-3 text-[var(--ink)]">{formatNumber(order.total)}원</td>
-                        <td className="px-4 py-3 text-[var(--ink)]">{formatNumber(order.total - order.discountedTotal)}원</td>
+                    {orderRequestsByType.orders.map((request) => {
+                      const itemCount = (request.items || []).length;
+                      const quantitySum = (request.items || []).reduce(
+                        (sum, item) => sum + Number(item?.quantity || 0),
+                        0
+                      );
+                      const normalizedStatus = normalizeOrderStatus(request.status);
+                      return (
+                      <tr key={request.id} className="border-t border-[var(--line)] bg-white">
+                        <td className="px-4 py-3 font-semibold text-[var(--navy)]">{request.id}</td>
+                        <td className="px-4 py-3 text-[var(--ink)]">
+                          <p>{request.customer?.companyName || '-'}</p>
+                          <p className="text-xs text-[var(--muted)]">{request.customer?.email || '-'}</p>
+                        </td>
+                        <td className="px-4 py-3 text-[var(--ink)]">{itemCount}</td>
+                        <td className="px-4 py-3 text-[var(--ink)]">{quantitySum}</td>
+                        <td className="px-4 py-3 text-[var(--ink)]">{formatNumber(request.totalAmount)}원</td>
                         <td className="px-4 py-3">
-                          <span className={`rounded-md border px-2.5 py-1.5 text-xs font-semibold ${statusClass(order.status)}`}>
-                            {order.status}
+                          <span className={`rounded-md border px-2.5 py-1.5 text-xs font-semibold ${statusClass(normalizedStatus)}`}>
+                            {normalizedStatus}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-[var(--ink)]">{formatDate(order.createdAt)}</td>
+                        <td className="px-4 py-3 text-[var(--ink)]">{formatDateTime(request.requestedAt)}</td>
                       </tr>
-                    ))}
+                      );
+                    })}
 
-                    {!ordersLoading && orders.length === 0 ? (
+                    {!ordersLoading && orderRequestsByType.orders.length === 0 ? (
                       <tr>
-                        <td className="px-4 py-6 text-[var(--muted)]" colSpan={8}>
+                        <td className="px-4 py-6 text-[var(--muted)]" colSpan={7}>
                           발주 데이터가 없습니다.
                         </td>
                       </tr>
@@ -1356,14 +1610,15 @@ function AdminPage({ user, profile, authReady }) {
                 </p>
 
                 <div className="mt-4 overflow-x-auto rounded-xl border border-[var(--line)] bg-white">
-                  <table className="min-w-[1080px] w-full border-collapse text-left text-sm">
+                  <table className="min-w-[1200px] w-full border-collapse text-left text-sm">
                     <thead className="bg-[var(--navy)] text-white">
                       <tr>
                         <th className="px-4 py-3 font-semibold">요청번호</th>
+                        <th className="px-4 py-3 font-semibold">상세</th>
                         <th className="px-4 py-3 font-semibold">구분</th>
                         <th className="px-4 py-3 font-semibold">기업/이메일</th>
                         <th className="px-4 py-3 font-semibold">품목</th>
-                        <th className="px-4 py-3 font-semibold">결제금액(부가세포함)</th>
+                        <th className="px-4 py-3 text-right font-semibold">결제금액</th>
                         <th className="px-4 py-3 font-semibold">상태</th>
                         <th className="px-4 py-3 font-semibold">요청시각</th>
                       </tr>
@@ -1371,24 +1626,33 @@ function AdminPage({ user, profile, authReady }) {
                     <tbody>
                       {orderRequestsByType.quotes.map((request) => (
                         <tr key={request.id} className="border-t border-[var(--line)] bg-white">
-                          <td className="px-4 py-3 font-semibold text-[var(--navy)]">{request.id}</td>
-                          <td className="px-4 py-3 text-[var(--ink)]">견적요청</td>
-                          <td className="px-4 py-3 text-[var(--ink)]">
-                            <p>{request.customer?.companyName || '-'}</p>
-                            <p className="text-xs text-[var(--muted)]">{request.customer?.email || '-'}</p>
+                          <td className="whitespace-nowrap px-4 py-3 align-top font-semibold text-[var(--navy)]">{request.id}</td>
+                          <td className="whitespace-nowrap px-4 py-3 align-top">
+                            <button
+                              type="button"
+                              onClick={() => openRequestDetail(request)}
+                              className="rounded-md border border-[var(--navy)] px-3 py-1.5 text-xs font-semibold text-[var(--navy)] transition hover:bg-[var(--navy)] hover:text-white"
+                            >
+                              상세 보기
+                            </button>
                           </td>
-                          <td className="px-4 py-3 text-[var(--ink)]">
+                          <td className="whitespace-nowrap px-4 py-3 align-top text-[var(--ink)]">견적요청</td>
+                          <td className="min-w-[180px] px-4 py-3 align-top text-[var(--ink)]">
+                            <p>{request.customer?.companyName || '-'}</p>
+                            <p className="break-all text-xs text-[var(--muted)]">{request.customer?.email || '-'}</p>
+                          </td>
+                          <td className="max-w-[280px] px-4 py-3 align-top text-[var(--ink)]">
                             {(request.items || []).map((item) => `${item.model} x${item.quantity}`).join(', ')}
                           </td>
-                          <td className="px-4 py-3 text-[var(--ink)]">{formatNumber(request.totalAmount)}원</td>
-                          <td className="px-4 py-3 text-[var(--ink)]">{request.status || '-'}</td>
-                          <td className="px-4 py-3 text-[var(--ink)]">{formatDateTime(request.requestedAt)}</td>
+                          <td className="whitespace-nowrap px-4 py-3 align-top text-right text-[var(--ink)]">{formatNumber(request.totalAmount)}원</td>
+                          <td className="whitespace-nowrap px-4 py-3 align-top text-[var(--ink)]">{request.status || '-'}</td>
+                          <td className="whitespace-nowrap px-4 py-3 align-top text-[var(--ink)]">{formatDateTime(request.requestedAt)}</td>
                         </tr>
                       ))}
 
                       {orderRequestsByType.quotes.length === 0 ? (
                         <tr>
-                          <td className="px-4 py-6 text-[var(--muted)]" colSpan={7}>
+                          <td className="px-4 py-6 text-[var(--muted)]" colSpan={8}>
                             접수된 견적 요청이 없습니다.
                           </td>
                         </tr>
@@ -1400,11 +1664,104 @@ function AdminPage({ user, profile, authReady }) {
             </section>
           ) : null}
 
+          {detailRequest ? (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(7,16,36,0.4)] p-4"
+              onClick={closeRequestDetail}
+            >
+              <section
+                className="max-h-[88vh] w-full max-w-6xl overflow-y-auto rounded-2xl border border-[var(--line)] bg-white p-6 shadow-[0_30px_60px_-35px_rgba(15,23,42,0.5)] sm:p-8"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold tracking-[0.12em] text-[var(--muted)]">REQUEST DETAIL</p>
+                    <h3 className="mt-1 font-brand text-2xl tracking-[0.05em] text-[var(--navy)]">{detailRequest.id}</h3>
+                    <p className="mt-1 text-xs text-[var(--muted)]">{detailRequest.customer?.companyName || '-'} / {detailRequest.customer?.email || '-'}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeRequestDetail}
+                    className="rounded-md border border-[var(--line)] px-3 py-1.5 text-xs font-semibold text-[var(--muted)]"
+                  >
+                    닫기
+                  </button>
+                </div>
+
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  {detailRequest.shipping?.sender ? (
+                    <article className="rounded-xl border border-[var(--line)] bg-[#f8fbff] p-4">
+                      <p className="text-xs font-semibold tracking-[0.08em] text-[var(--muted)]">보내는 사람</p>
+                      <p className="mt-2 text-sm font-semibold text-[var(--navy)]">{detailRequest.shipping.sender.name || '-'}</p>
+                      <p className="mt-1 text-xs text-[var(--ink)]">{detailRequest.shipping.sender.phone || '-'}</p>
+                      <p className="mt-1 text-xs text-[var(--ink)]">
+                        {detailRequest.shipping.sender.address || '-'} {detailRequest.shipping.sender.addressDetail || ''}
+                      </p>
+                    </article>
+                  ) : null}
+
+                  {detailRequest.shipping?.receiver ? (
+                    <article className="rounded-xl border border-[var(--line)] bg-[#f8fbff] p-4">
+                      <p className="text-xs font-semibold tracking-[0.08em] text-[var(--muted)]">받는 사람</p>
+                      <p className="mt-2 text-sm font-semibold text-[var(--navy)]">{detailRequest.shipping.receiver.name || '-'}</p>
+                      <p className="mt-1 text-xs text-[var(--ink)]">{detailRequest.shipping.receiver.phone || '-'}</p>
+                      <p className="mt-1 text-xs text-[var(--ink)]">
+                        {detailRequest.shipping.receiver.address || '-'} {detailRequest.shipping.receiver.addressDetail || ''}
+                      </p>
+                    </article>
+                  ) : null}
+
+                  {!detailRequest.shipping?.sender && !detailRequest.shipping?.receiver ? (
+                    <article className="rounded-xl border border-[var(--line)] bg-[#f8fbff] p-4 sm:col-span-2">
+                      <p className="text-xs font-semibold tracking-[0.08em] text-[var(--muted)]">배송지(일반회원)</p>
+                      <p className="mt-2 text-sm font-semibold text-[var(--navy)]">{detailRequest.shipping?.recipient?.name || '-'}</p>
+                      <p className="mt-1 text-xs text-[var(--ink)]">{detailRequest.shipping?.recipient?.phone || '-'}</p>
+                      <p className="mt-1 text-xs text-[var(--ink)]">
+                        {detailRequest.shipping?.recipient?.address || '-'} {detailRequest.shipping?.recipient?.addressDetail || ''}
+                      </p>
+                    </article>
+                  ) : null}
+                </div>
+
+                <div className="mt-4 overflow-x-auto rounded-xl border border-[var(--line)] bg-white">
+                  <table className="min-w-[980px] w-full border-collapse text-left text-sm">
+                    <thead className="bg-[var(--navy)] text-white">
+                      <tr>
+                        <th className="px-4 py-3 font-semibold">No</th>
+                        <th className="px-4 py-3 font-semibold">모델</th>
+                        <th className="px-4 py-3 text-right font-semibold">수량</th>
+                        <th className="px-4 py-3 text-right font-semibold">단가</th>
+                        <th className="px-4 py-3 text-right font-semibold">소계</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(detailRequest.items || []).map((item, index) => (
+                        <tr key={`${detailRequest.id}-${item.slug || item.model || 'item'}-${index}`} className="border-t border-[var(--line)] bg-white">
+                          <td className="px-4 py-3 text-[var(--ink)]">{index + 1}</td>
+                          <td className="px-4 py-3 text-[var(--ink)]">{item.model || '-'}</td>
+                          <td className="px-4 py-3 text-right text-[var(--ink)]">{formatNumber(item.quantity)}</td>
+                          <td className="px-4 py-3 text-right text-[var(--ink)]">{item.unitPrice || '-'}</td>
+                          <td className="px-4 py-3 text-right font-semibold text-[var(--navy)]">{formatNumber(item.subtotal)}원</td>
+                        </tr>
+                      ))}
+                      {(detailRequest.items || []).length === 0 ? (
+                        <tr>
+                          <td className="px-4 py-6 text-[var(--muted)]" colSpan={5}>
+                            표시할 품목이 없습니다.
+                          </td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          ) : null}
+
           {memberLoading ? <p className="text-sm text-[var(--muted)]">회원 목록 로딩 중...</p> : null}
           {ordersLoading ? <p className="text-sm text-[var(--muted)]">발주 데이터 로딩 중...</p> : null}
           {memberError ? <p className="text-sm font-medium text-red-600">{memberError}</p> : null}
           {ordersError ? <p className="text-sm font-medium text-amber-600">{ordersError}</p> : null}
-          {fxError ? <p className="text-sm font-medium text-amber-600">{fxError}</p> : null}
         </div>
       </section>
     </main>

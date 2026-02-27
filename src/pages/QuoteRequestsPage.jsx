@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import { readOrderRequests, subscribeOrderUpdates } from '../lib/orderRequests';
+import { USER_ROLES, canUseQuoteFeatures } from '../lib/roles';
 
 function formatCurrency(value) {
   return `${new Intl.NumberFormat('ko-KR').format(Number(value || 0))}원`;
@@ -33,6 +34,10 @@ function QuoteRequestsPage({ user, profile, authReady }) {
   const [requests, setRequests] = useState(() => readOrderRequests());
 
   useEffect(() => {
+    if (!user || !canUseQuoteFeatures(profile?.role)) {
+      setRequests([]);
+      return undefined;
+    }
     return subscribeOrderUpdates(
       () => {
         setRequests(readOrderRequests());
@@ -54,12 +59,16 @@ function QuoteRequestsPage({ user, profile, authReady }) {
   if (!user) {
     return <Navigate to="/login" replace state={{ message: '견적요청 내역은 로그인 후 확인할 수 있습니다.' }} />;
   }
+  if (!canUseQuoteFeatures(profile?.role)) {
+    return <Navigate to="/" replace state={{ message: '사업자회원만 견적요청 관련 기능을 사용할 수 있습니다.' }} />;
+  }
 
   const userUid = user?.uid || '';
   const userEmail = user?.email || profile?.email || '';
+  const isAdmin = profile?.role === USER_ROLES.ADMIN;
 
   const quoteRequests = requests.filter(
-    (request) => request.type === 'quote' && isOwnRequest(request, userUid, userEmail)
+    (request) => request.type === 'quote' && (isAdmin || isOwnRequest(request, userUid, userEmail))
   );
 
   return (

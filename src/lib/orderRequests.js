@@ -1,30 +1,31 @@
-import { addDoc, collection, onSnapshot, query, serverTimestamp, where } from 'firebase/firestore';
+﻿import { addDoc, collection, doc, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import { USER_ROLES } from './roles';
 
-const ORDER_LIST_STORAGE_KEY = 'mw_order_list_v1';
 const ORDER_EVENT = 'mw-orders-updated';
 const ORDER_UI_EVENT = 'mw-orders-ui-event';
 const ORDER_REQUEST_COLLECTION = 'orderRequests';
+const ORDER_LIST_STORAGE_KEY = 'mw-order-list-items';
 
+let orderListCache = [];
 let orderRequestsCache = [];
-let sharedSnapshotKey = '';
-let sharedSnapshotStop = null;
-const sharedSnapshotListeners = new Set();
+const orderListListeners = new Set();
+const orderRequestListeners = new Set();
+let orderListHydrated = false;
 
-function canUseStorage() {
-  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+function canUseWindow() {
+  return typeof window !== 'undefined';
 }
 
 function dispatchOrderEvent() {
-  if (!canUseStorage()) {
+  if (!canUseWindow()) {
     return;
   }
   window.dispatchEvent(new Event(ORDER_EVENT));
 }
 
 function dispatchOrderUiEvent(action) {
-  if (typeof window === 'undefined') {
+  if (!canUseWindow()) {
     return;
   }
   window.dispatchEvent(new CustomEvent(ORDER_UI_EVENT, { detail: { action } }));
@@ -47,6 +48,46 @@ function toDateValue(value) {
   return null;
 }
 
+function sanitizeOrderItems(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items.filter((item) => item?.slug && item?.model && Number(item?.quantity) > 0);
+}
+
+function hydrateOrderListFromStorage() {
+  if (orderListHydrated) {
+    return;
+  }
+  orderListHydrated = true;
+
+  if (!canUseWindow()) {
+    return;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(ORDER_LIST_STORAGE_KEY);
+    if (!raw) {
+      orderListCache = [];
+      return;
+    }
+    orderListCache = sanitizeOrderItems(JSON.parse(raw));
+  } catch {
+    orderListCache = [];
+  }
+}
+
+function persistOrderListToStorage(items) {
+  if (!canUseWindow()) {
+    return;
+  }
+  try {
+    window.localStorage.setItem(ORDER_LIST_STORAGE_KEY, JSON.stringify(items));
+  } catch {
+    // noop
+  }
+}
+
 function normalizeOrderRequest(snapshotDoc) {
   const data = snapshotDoc.data() || {};
   const createdAtDate = toDateValue(data.createdAt);
@@ -54,8 +95,9 @@ function normalizeOrderRequest(snapshotDoc) {
   const requestedAtDate = toDateValue(data.requestedAt) ?? createdAtDate;
 
   return {
-    id: snapshotDoc.id,
     ...data,
+    id: data?.id || snapshotDoc.id,
+    docId: snapshotDoc.id,
     requestedAt: requestedAtDate ? requestedAtDate.toISOString() : '',
     createdAt: createdAtDate ? createdAtDate.toISOString() : null,
     updatedAt: updatedAtDate ? updatedAtDate.toISOString() : null
@@ -70,53 +112,83 @@ function sortRequestsDesc(list) {
   });
 }
 
-export function readOrderListItems() {
-  if (!canUseStorage()) {
-    return [];
-  }
-
-  try {
-    const raw = window.localStorage.getItem(ORDER_LIST_STORAGE_KEY);
-    if (!raw) {
-      return [];
+function notifyOrderListListeners() {
+  orderListListeners.forEach((listener) => {
+    try {
+      listener();
+    } catch {
+      // noop
     }
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed.filter((item) => item?.slug && item?.model && item?.quantity > 0);
-  } catch (error) {
-    return [];
-  }
+  });
 }
 
-export function writeOrderListItems(items) {
-  if (!canUseStorage()) {
+function notifyOrderRequestListeners() {
+  orderRequestListeners.forEach((listener) => {
+    try {
+      listener();
+    } catch {
+      // noop
+    }
+  });
+}
+
+async function fetchOrderRequests(options = {}) {
+  if (!db) {
+    orderRequestsCache = [];
+    notifyOrderRequestListeners();
     return;
   }
 
-  window.localStorage.setItem(ORDER_LIST_STORAGE_KEY, JSON.stringify(items));
+  const role = options?.role ?? null;
+  const uid = options?.uid ?? auth?.currentUser?.uid ?? '';
+  const isAdmin = role === USER_ROLES.ADMIN;
+
+  if (!isAdmin && !uid) {
+    orderRequestsCache = [];
+    notifyOrderRequestListeners();
+    return;
+  }
+
+  const baseCollection = collection(db, ORDER_REQUEST_COLLECTION);
+  const streamQuery = isAdmin ? baseCollection : query(baseCollection, where('requesterUid', '==', uid));
+
+  try {
+    const snapshot = await getDocs(streamQuery);
+    orderRequestsCache = sortRequestsDesc(snapshot.docs.map(normalizeOrderRequest));
+  } catch {
+    orderRequestsCache = [];
+  }
+
+  notifyOrderRequestListeners();
+}
+
+export function readOrderListItems() {
+  hydrateOrderListFromStorage();
+  return orderListCache;
+}
+
+export function writeOrderListItems(items) {
+  hydrateOrderListFromStorage();
+  orderListCache = sanitizeOrderItems(items);
+  persistOrderListToStorage(orderListCache);
   dispatchOrderEvent();
+  notifyOrderListListeners();
 }
 
 export function subscribeOrderListUpdates(callback) {
-  if (!canUseStorage()) {
-    return () => {};
+  orderListListeners.add(callback);
+  callback();
+
+  const onCustom = () => callback();
+  if (canUseWindow()) {
+    window.addEventListener(ORDER_EVENT, onCustom);
   }
 
-  const onStorage = (event) => {
-    if (event.key === ORDER_LIST_STORAGE_KEY) {
-      callback();
-    }
-  };
-  const onCustom = () => callback();
-
-  window.addEventListener('storage', onStorage);
-  window.addEventListener(ORDER_EVENT, onCustom);
-
   return () => {
-    window.removeEventListener('storage', onStorage);
-    window.removeEventListener(ORDER_EVENT, onCustom);
+    orderListListeners.delete(callback);
+    if (canUseWindow()) {
+      window.removeEventListener(ORDER_EVENT, onCustom);
+    }
   };
 }
 
@@ -133,7 +205,7 @@ export function openQuoteHistoryModal() {
 }
 
 export function subscribeOrderUiEvents(callback) {
-  if (typeof window === 'undefined') {
+  if (!canUseWindow()) {
     return () => {};
   }
 
@@ -174,107 +246,98 @@ export async function appendOrderRequest(payload) {
   };
 
   const created = await addDoc(collection(db, ORDER_REQUEST_COLLECTION), requestPayload);
-  return { id: created.id, ...requestPayload };
+
+  orderRequestsCache = sortRequestsDesc([
+    {
+      ...requestPayload,
+      id: requestPayload?.id || created.id,
+      docId: created.id,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    },
+    ...orderRequestsCache
+  ]);
+  notifyOrderRequestListeners();
+
+  return { ...requestPayload, id: requestPayload?.id || created.id, docId: created.id };
 }
 
-function notifySharedSnapshotListeners() {
-  sharedSnapshotListeners.forEach((listener) => {
-    try {
-      listener();
-    } catch (error) {
-      // noop: keep notifying other listeners
+async function resolveOrderRequestDocId(request) {
+  const knownDocId = String(request?.docId || '').trim();
+  if (knownDocId) {
+    return knownDocId;
+  }
+
+  const requestId = String(request?.id || '').trim();
+  if (!requestId || !db) {
+    return '';
+  }
+
+  const snapshot = await getDocs(query(collection(db, ORDER_REQUEST_COLLECTION), where('id', '==', requestId)));
+  return snapshot.docs[0]?.id || '';
+}
+
+function updateCachedOrderRequestStatus(request, nextStatus) {
+  const requestId = String(request?.id || '').trim();
+  const requestDocId = String(request?.docId || '').trim();
+
+  orderRequestsCache = orderRequestsCache.map((row) => {
+    const sameByDocId = requestDocId && String(row?.docId || '').trim() === requestDocId;
+    const sameById = requestId && String(row?.id || '').trim() === requestId;
+    if (!sameByDocId && !sameById) {
+      return row;
     }
+    return {
+      ...row,
+      status: nextStatus,
+      updatedAt: new Date().toISOString()
+    };
   });
 }
 
-function closeSharedSnapshot() {
-  if (typeof sharedSnapshotStop === 'function') {
-    sharedSnapshotStop();
+export async function updateOrderRequestStatus(request, nextStatus) {
+  if (!db || !auth?.currentUser) {
+    throw new Error('order-request-auth-required');
   }
-  sharedSnapshotStop = null;
-  sharedSnapshotKey = '';
-}
 
-function buildSnapshotKey({ isAdmin, uid }) {
-  if (isAdmin) {
-    return 'admin:all';
+  const docId = await resolveOrderRequestDocId(request);
+  if (!docId) {
+    throw new Error('order-request-not-found');
   }
-  return uid ? `user:${uid}` : 'user:none';
+
+  await updateDoc(doc(db, ORDER_REQUEST_COLLECTION, docId), {
+    status: nextStatus,
+    updatedAt: serverTimestamp()
+  });
+
+  updateCachedOrderRequestStatus({ ...request, docId }, nextStatus);
+  notifyOrderRequestListeners();
 }
 
 export function subscribeOrderUpdates(callback, options = {}) {
   const unsubs = [];
 
-  if (canUseStorage()) {
-    const onStorage = (event) => {
-      if (event.key === ORDER_LIST_STORAGE_KEY) {
-        callback();
-      }
-    };
+  orderRequestListeners.add(callback);
+  unsubs.push(() => {
+    orderRequestListeners.delete(callback);
+  });
 
-    const onCustom = () => callback();
-    window.addEventListener('storage', onStorage);
+  const onCustom = () => callback();
+  if (canUseWindow()) {
     window.addEventListener(ORDER_EVENT, onCustom);
-
     unsubs.push(() => {
-      window.removeEventListener('storage', onStorage);
       window.removeEventListener(ORDER_EVENT, onCustom);
     });
   }
 
-  if (!db) {
-    orderRequestsCache = [];
-    callback();
-    return () => {
-      unsubs.forEach((unsubscribe) => unsubscribe());
-    };
-  }
-
-  const role = options?.role ?? null;
-  const uid = options?.uid ?? auth?.currentUser?.uid ?? '';
-  const isAdmin = role === USER_ROLES.ADMIN;
-  const nextSnapshotKey = buildSnapshotKey({ isAdmin, uid });
-
-  sharedSnapshotListeners.add(callback);
-  unsubs.push(() => {
-    sharedSnapshotListeners.delete(callback);
-    if (sharedSnapshotListeners.size === 0) {
-      closeSharedSnapshot();
-    }
-  });
-
-  if (!isAdmin && !uid) {
-    closeSharedSnapshot();
-    orderRequestsCache = [];
-    callback();
-    return () => {
-      unsubs.forEach((unsubscribe) => unsubscribe());
-    };
-  }
-
-  if (!sharedSnapshotStop || sharedSnapshotKey !== nextSnapshotKey) {
-    closeSharedSnapshot();
-
-    const baseCollection = collection(db, ORDER_REQUEST_COLLECTION);
-    const streamQuery = isAdmin ? baseCollection : query(baseCollection, where('requesterUid', '==', uid));
-
-    sharedSnapshotKey = nextSnapshotKey;
-    sharedSnapshotStop = onSnapshot(
-      streamQuery,
-      (snapshot) => {
-        orderRequestsCache = sortRequestsDesc(snapshot.docs.map(normalizeOrderRequest));
-        notifySharedSnapshotListeners();
-      },
-      () => {
-        orderRequestsCache = [];
-        notifySharedSnapshotListeners();
-      }
-    );
-  }
-
-  callback();
+  fetchOrderRequests(options).finally(() => callback());
 
   return () => {
     unsubs.forEach((unsubscribe) => unsubscribe());
   };
 }
+
+export async function refreshOrderRequests(options = {}) {
+  await fetchOrderRequests(options);
+}
+

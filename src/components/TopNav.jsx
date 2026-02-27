@@ -9,7 +9,6 @@ const navItems = [
 ];
 
 function TopNav({ user, profile, onLogout }) {
-  const userLabel = user?.isAnonymous ? '관리자 세션' : profile?.companyName || user?.email;
   const isAdmin = profile?.role === USER_ROLES.ADMIN;
   const roleClassName =
     isAdmin
@@ -53,9 +52,18 @@ function TopNav({ user, profile, onLogout }) {
         <div className="flex items-center gap-2 text-[11px] sm:text-xs">
           {user ? (
             <>
-              <span className="hidden rounded-md border border-white/20 bg-white/5 px-2.5 py-1.5 font-medium text-white/85 lg:block">
-                {userLabel}
-              </span>
+              <NavLink
+                to="/orders/history"
+                className={({ isActive }) =>
+                  `rounded-md border px-2.5 py-1.5 font-semibold tracking-[0.06em] transition sm:px-3 ${
+                    isActive
+                      ? 'border-white/70 bg-white/10 text-white'
+                      : 'border-white/30 text-white/90 hover:border-white/60'
+                  }`
+                }
+              >
+                주문내역
+              </NavLink>
               {profile?.role ? (
                 <span
                   className={`rounded-md border px-2.5 py-1.5 font-semibold tracking-[0.04em] ${roleClassName}`}
@@ -103,7 +111,7 @@ function TopNav({ user, profile, onLogout }) {
                 }`
               }
             >
-              사업자 로그인
+              로그인
             </NavLink>
           )}
         </div>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
-import { readOrderRequests, subscribeOrderUpdates } from '../lib/orderRequests';
+import { readOrderRequests, subscribeOrderUpdates, updateOrderRequestStatus } from '../lib/orderRequests';
+import { ORDER_STATUS_CANCELED, ORDER_STATUS_FLOW, isOrderCancelable, normalizeOrderStatus } from '../lib/orderStatus';
 
 function formatDateTime(value) {
   if (!value) {
@@ -35,6 +36,8 @@ function OrderDetailPage({ user, profile, authReady }) {
   const [requests, setRequests] = useState(() => readOrderRequests());
   const [isHydrated, setIsHydrated] = useState(false);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [actionNotice, setActionNotice] = useState('');
+  const [isCancelling, setIsCancelling] = useState(false);
 
   useEffect(() => {
     return subscribeOrderUpdates(
@@ -110,6 +113,23 @@ function OrderDetailPage({ user, profile, authReady }) {
     );
   }
 
+  const handleCancelOrder = async () => {
+    if (!isOrderCancelable(order.status)) {
+      return;
+    }
+
+    try {
+      setIsCancelling(true);
+      setActionNotice('');
+      await updateOrderRequestStatus(order, ORDER_STATUS_CANCELED);
+      setActionNotice('주문이 취소되었습니다.');
+    } catch {
+      setActionNotice('주문 취소에 실패했습니다. 잠시 후 다시 시도해 주세요.');
+    } finally {
+      setIsCancelling(false);
+    }
+  };
+
   return (
     <main className="mx-auto min-h-screen w-full max-w-[1080px] px-6 pb-20 pt-28 sm:px-10">
       <section className="rounded-2xl border border-[var(--line)] bg-white p-6 shadow-[0_20px_44px_-34px_rgba(15,23,42,0.45)] sm:p-8">
@@ -119,7 +139,7 @@ function OrderDetailPage({ user, profile, authReady }) {
             <h1 className="mt-1 font-brand text-3xl tracking-[0.05em] text-[var(--navy)]">주문상세</h1>
           </div>
           <span className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
-            {order.status || '접수요청'}
+            {normalizeOrderStatus(order.status)}
           </span>
         </div>
 
@@ -156,7 +176,19 @@ function OrderDetailPage({ user, profile, authReady }) {
           >
             주문내역 목록
           </Link>
+          {isOrderCancelable(order.status) ? (
+            <button
+              type="button"
+              onClick={handleCancelOrder}
+              disabled={isCancelling}
+              className="rounded-md border border-red-300 bg-red-50 px-4 py-2 text-sm font-semibold tracking-[0.05em] text-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              주문 취소
+            </button>
+          ) : null}
         </div>
+        <p className="mt-3 text-xs text-[var(--muted)]">진행 단계: {ORDER_STATUS_FLOW.join(' > ')}</p>
+        {actionNotice ? <p className="mt-2 text-sm font-medium text-[var(--navy)]">{actionNotice}</p> : null}
       </section>
 
       {isPreviewOpen ? (

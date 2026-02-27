@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { getCatalogProducts, subscribeCatalogUpdates } from '../lib/productCatalog';
-import { canViewWholesalePrice } from '../lib/roles';
 
-function CatalogSection({ user, profile, title = 'MEANWELL SMPS', showHeader = true, scrollId }) {
+function CatalogSection({ title = 'MEANWELL SMPS', showHeader = true, scrollId }) {
   const sectionRef = useRef(null);
   const [catalogProducts, setCatalogProducts] = useState(() => getCatalogProducts());
   const [searchQuery, setSearchQuery] = useState('');
@@ -139,6 +138,8 @@ function CatalogSection({ user, profile, title = 'MEANWELL SMPS', showHeader = t
               <img
                 src={product.image}
                 alt={`${product.model} 제품 이미지`}
+                loading="lazy"
+                decoding="async"
                 className="aspect-square w-full object-cover transition duration-500 hover:scale-[1.03]"
               />
             </Link>
@@ -155,16 +156,8 @@ function CatalogSection({ user, profile, title = 'MEANWELL SMPS', showHeader = t
             <div className="mt-6 flex items-center justify-between gap-4">
               <div>
                 <p className="text-sm font-semibold text-[#7c8492]">
-                  공급가 : <span className="line-through">{product.supplyPrice || '-'}</span>
+                  공급가 : {product.supplyPrice || '-'}
                 </p>
-
-                {canViewWholesalePrice(profile?.role) ? (
-                  <p className="mt-1 font-brand text-xl font-bold text-[var(--navy)]">판매가 : {product.wholesalePrice || '-'}</p>
-                ) : user ? (
-                  <p className="mt-1 font-brand text-xl font-bold text-amber-600">판매가 승인대기중</p>
-                ) : (
-                  <p className="mt-1 font-brand text-xl font-bold text-red-600">판매가 로그인 필요</p>
-                )}
 
                 <p className="mt-1 text-[11px] font-semibold tracking-[0.06em] text-[var(--muted)]">부가세 별도</p>
                 <p className="mt-1 text-xs text-[var(--muted)]">{product.leadTime || '-'}</p>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
-import { readOrderRequests, subscribeOrderUpdates } from '../lib/orderRequests';
+import { readOrderRequests, subscribeOrderUpdates, updateOrderRequestStatus } from '../lib/orderRequests';
+import { ORDER_STATUS_CANCELED, ORDER_STATUS_FLOW, isOrderCancelable, normalizeOrderStatus } from '../lib/orderStatus';
 
 function formatCurrency(value) {
   return `${new Intl.NumberFormat('ko-KR').format(Number(value || 0))}원`;
@@ -31,6 +32,8 @@ function isOwnRequest(request, uid, email) {
 
 function OrderHistoryPage({ user, profile, authReady }) {
   const [requests, setRequests] = useState(() => readOrderRequests());
+  const [updatingOrderId, setUpdatingOrderId] = useState('');
+  const [actionNotice, setActionNotice] = useState('');
 
   useEffect(() => {
     return subscribeOrderUpdates(
@@ -62,6 +65,23 @@ function OrderHistoryPage({ user, profile, authReady }) {
     (request) => request.type !== 'quote' && isOwnRequest(request, userUid, userEmail)
   );
 
+  const handleCancelOrder = async (request) => {
+    if (!isOrderCancelable(request?.status)) {
+      return;
+    }
+
+    try {
+      setUpdatingOrderId(request.id);
+      setActionNotice('');
+      await updateOrderRequestStatus(request, ORDER_STATUS_CANCELED);
+      setActionNotice('주문이 취소되었습니다.');
+    } catch {
+      setActionNotice('주문 취소에 실패했습니다. 잠시 후 다시 시도해 주세요.');
+    } finally {
+      setUpdatingOrderId('');
+    }
+  };
+
   return (
     <main className="mx-auto min-h-screen w-full max-w-[1080px] px-6 pb-20 pt-28 sm:px-10">
       <section className="rounded-2xl border border-[var(--line)] bg-white p-6 shadow-[0_20px_44px_-34px_rgba(15,23,42,0.45)] sm:p-8">
@@ -90,7 +110,7 @@ function OrderHistoryPage({ user, profile, authReady }) {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="font-semibold text-[var(--navy)]">{request.id}</p>
                   <span className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
-                    {request.status || '접수요청'}
+                    {normalizeOrderStatus(request.status)}
                   </span>
                 </div>
                 <p className="mt-1 text-xs text-[var(--muted)]">요청일시: {formatDateTime(request.requestedAt)}</p>
@@ -103,10 +123,24 @@ function OrderHistoryPage({ user, profile, authReady }) {
                 <p className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700">
                   {request.message || '재고 확인 후 이카운트를 통해 발주서를 발송드릴 예정입니다.'}
                 </p>
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <p className="text-[11px] text-[var(--muted)]">진행 단계: {ORDER_STATUS_FLOW.join(' > ')}</p>
+                  {isOrderCancelable(request.status) ? (
+                    <button
+                      type="button"
+                      onClick={() => handleCancelOrder(request)}
+                      disabled={updatingOrderId === request.id}
+                      className="rounded-md border border-red-300 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      주문 취소
+                    </button>
+                  ) : null}
+                </div>
               </article>
             ))
           )}
         </div>
+        {actionNotice ? <p className="mt-4 text-sm font-medium text-[var(--navy)]">{actionNotice}</p> : null}
       </section>
     </main>
   );

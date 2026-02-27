@@ -12,6 +12,7 @@ import BusinessPage from './pages/BusinessPage';
 import ContactPage from './pages/ContactPage';
 import OrderHistoryPage from './pages/OrderHistoryPage';
 import QuoteRequestsPage from './pages/QuoteRequestsPage';
+import OrderCheckoutPage from './pages/OrderCheckoutPage';
 import { auth, db } from './lib/firebase';
 import { canLogin, resolveRole } from './lib/roles';
 import ValuePage from './pages/ValuePage';
@@ -87,6 +88,7 @@ function App() {
         <Route path="/login" element={<LoginPage user={user} />} />
         <Route path="/signup" element={<SignupPage user={user} />} />
         <Route path="/orders/history" element={<OrderHistoryPage user={user} profile={profile} authReady={authReady} />} />
+        <Route path="/orders/checkout" element={<OrderCheckoutPage user={user} profile={profile} authReady={authReady} />} />
         <Route path="/quotes/requests" element={<QuoteRequestsPage user={user} profile={profile} authReady={authReady} />} />
         <Route
           path="/admin"

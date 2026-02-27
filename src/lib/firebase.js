@@ -5,6 +5,7 @@ import { getStorage } from 'firebase/storage';
 
 
 const firebaseConfig = typeof window !== 'undefined' ? window.FIREBASE_CONFIG : null;
+export const commonDetailImagePath = String(firebaseConfig?.commonDetailImagePath ?? '').trim();
 
 export const isFirebaseConfigured = Boolean(firebaseConfig);
 
@@ -16,4 +17,4 @@ const app =
 export const firebaseApp = app;
 export const auth = app ? getAuth(app) : null;
 export const db = app ? getFirestore(app) : null;
-export const storage = getStorage(app); 
+export const storage = app ? getStorage(app) : null;

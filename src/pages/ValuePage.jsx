@@ -103,6 +103,8 @@ function ValuePage() {
             <img
               src={GUIDE_IMAGE}
               alt="100% 정품 취급 및 정품 확인 방법 안내"
+              loading="lazy"
+              decoding="async"
               className="w-full object-contain"
             />
           </div>

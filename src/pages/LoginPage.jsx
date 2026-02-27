@@ -43,7 +43,7 @@ function LoginPage({ user }) {
 
       if (!canLogin(role)) {
         await signOut(auth);
-        setError('관리자 승인 후 로그인할 수 있습니다.');
+        setError('로그인할 수 없는 계정입니다.');
         return;
       }
 
@@ -65,7 +65,7 @@ function LoginPage({ user }) {
       <div className="grid w-full items-stretch gap-6 lg:grid-cols-[minmax(0,640px)_1fr]">
         <section className="w-full rounded-2xl border border-[var(--line)] bg-white p-8 shadow-[0_26px_55px_-38px_rgba(15,23,42,0.55)] sm:p-10">
           <p className="text-xs font-semibold tracking-[0.15em] text-[var(--muted)]">BUSINESS LOGIN</p>
-          <h1 className="mt-2 font-brand text-3xl tracking-[0.05em] text-[var(--navy)]">사업자 로그인</h1>
+          <h1 className="mt-2 font-brand text-3xl tracking-[0.05em] text-[var(--navy)]">로그인</h1>
           <p className="mt-2 text-sm text-[var(--muted)]">이메일/비밀번호로 로그인 후 주문과 견적을 관리하세요.</p>
           {infoMessage ? <p className="mt-3 text-sm font-medium text-emerald-700">{infoMessage}</p> : null}
 

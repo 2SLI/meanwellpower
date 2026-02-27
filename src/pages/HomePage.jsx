@@ -47,7 +47,12 @@ function HomePage({ user, profile }) {
       {/* HERO */}
       <section className="relative overflow-hidden bg-[var(--navy)]">
         <div className="relative h-[78vh] min-h-[560px]">
-          <img src={heroImage} alt="민웰파워 메인 배너" className="absolute inset-0 h-full w-full object-cover" />
+          <img
+            src={heroImage}
+            alt="민웰파워 메인 배너"
+            decoding="async"
+            className="absolute inset-0 h-full w-full object-cover"
+          />
           <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(9,18,41,0.65)_0%,rgba(9,18,41,0.72)_40%,rgba(9,18,41,0.78)_100%)]" />
           <div className="absolute inset-y-0 left-0 w-[56%] bg-gradient-to-r from-[rgba(8,16,37,0.82)] to-transparent" />
 
@@ -116,12 +121,6 @@ function HomePage({ user, profile }) {
                   className="rounded-md border border-[var(--line)] bg-white px-4 py-2 text-xs font-semibold tracking-[0.06em] text-[var(--navy)] shadow-[0_14px_30px_-26px_rgba(15,23,42,0.25)] transition hover:bg-[#f7f9fc]"
                 >
                   전체 보기
-                </Link>
-                <Link
-                  to="/login"
-                  className="rounded-md bg-[var(--navy)] px-4 py-2 text-xs font-semibold tracking-[0.06em] text-white shadow-[0_16px_34px_-26px_rgba(8,14,30,0.45)] transition hover:brightness-110"
-                >
-                  도매가 로그인
                 </Link>
               </div>
             </div>
