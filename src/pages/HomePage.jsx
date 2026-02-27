@@ -1,6 +1,7 @@
-import { useMemo } from 'react';
+import { Suspense, lazy, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import CatalogSection from '../components/CatalogSection';
+
+const CatalogSection = lazy(() => import('../components/CatalogSection'));
 
 const stats = [
   { value: '3,500+', label: '누적 납품 품목', hint: '산업 현장 납품 기준' },
@@ -126,7 +127,15 @@ function HomePage({ user, profile }) {
             </div>
 
             <div id="online-catalog" className="mt-6 scroll-mt-28">
-              <CatalogSection user={user} profile={profile} title="MEANWELL SMPS" showHeader={false} />
+              <Suspense
+                fallback={
+                  <div className="rounded-2xl border border-[var(--line)] bg-white p-8 text-sm text-[var(--muted)]">
+                    카탈로그를 불러오는 중입니다...
+                  </div>
+                }
+              >
+                <CatalogSection user={user} profile={profile} title="MEANWELL SMPS" showHeader={false} />
+              </Suspense>
             </div>
           </section>
 

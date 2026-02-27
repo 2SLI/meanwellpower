@@ -1,4 +1,6 @@
-import CatalogSection from '../components/CatalogSection';
+import { Suspense, lazy } from 'react';
+
+const CatalogSection = lazy(() => import('../components/CatalogSection'));
 
 function ProductPage({ user, profile }) {
   return (
@@ -17,7 +19,15 @@ function ProductPage({ user, profile }) {
       </section>
 
       <div className="mt-8">
-        <CatalogSection user={user} profile={profile} title="MEANWELL SMPS" showHeader={false} />
+        <Suspense
+          fallback={
+            <div className="rounded-2xl border border-[var(--line)] bg-white p-8 text-sm text-[var(--muted)]">
+              카탈로그를 불러오는 중입니다...
+            </div>
+          }
+        >
+          <CatalogSection user={user} profile={profile} title="MEANWELL SMPS" showHeader={false} />
+        </Suspense>
       </div>
     </main>
   );

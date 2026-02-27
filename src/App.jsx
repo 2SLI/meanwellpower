@@ -5,20 +5,20 @@ import { doc, getDoc } from 'firebase/firestore';
 import TopNav from './components/TopNav';
 import GlobalOrderDock from './components/GlobalOrderDock';
 import HomePage from './pages/HomePage';
-import LoginPage from './pages/LoginPage';
-import SignupPage from './pages/SignupPage';
-import ProductDetailPage from './pages/ProductDetailPage';
-import BusinessPage from './pages/BusinessPage';
-import ContactPage from './pages/ContactPage';
-import OrderHistoryPage from './pages/OrderHistoryPage';
-import QuoteRequestsPage from './pages/QuoteRequestsPage';
-import OrderCheckoutPage from './pages/OrderCheckoutPage';
 import { auth, db } from './lib/firebase';
 import { canLogin, resolveRole } from './lib/roles';
-import ValuePage from './pages/ValuePage';
-import ProductPage from './pages/ProductPage';
 
 const AdminPage = lazy(() => import('./pages/AdminPage'));
+const LoginPage = lazy(() => import('./pages/LoginPage'));
+const SignupPage = lazy(() => import('./pages/SignupPage'));
+const ProductDetailPage = lazy(() => import('./pages/ProductDetailPage'));
+const BusinessPage = lazy(() => import('./pages/BusinessPage'));
+const ContactPage = lazy(() => import('./pages/ContactPage'));
+const OrderHistoryPage = lazy(() => import('./pages/OrderHistoryPage'));
+const QuoteRequestsPage = lazy(() => import('./pages/QuoteRequestsPage'));
+const OrderCheckoutPage = lazy(() => import('./pages/OrderCheckoutPage'));
+const ValuePage = lazy(() => import('./pages/ValuePage'));
+const ProductPage = lazy(() => import('./pages/ProductPage'));
 
 function App() {
   const [user, setUser] = useState(null);
@@ -80,36 +80,31 @@ function App() {
   return (
     <div className="min-h-screen bg-[var(--bg)] text-[var(--ink)]">
       <TopNav user={user} profile={profile} onLogout={handleLogout} />
-      <Routes>
-        <Route path="/" element={<HomePage user={user} profile={profile} />} />
-        <Route path="/business" element={<BusinessPage />} />
-        <Route path="/contact" element={<ContactPage />} />
-        <Route path="/value" element={<ValuePage />} />
-        <Route path="/login" element={<LoginPage user={user} />} />
-        <Route path="/signup" element={<SignupPage user={user} />} />
-        <Route path="/orders/history" element={<OrderHistoryPage user={user} profile={profile} authReady={authReady} />} />
-        <Route path="/orders/checkout" element={<OrderCheckoutPage user={user} profile={profile} authReady={authReady} />} />
-        <Route path="/quotes/requests" element={<QuoteRequestsPage user={user} profile={profile} authReady={authReady} />} />
-        <Route
-          path="/admin"
-          element={
-            <Suspense
-              fallback={
-                <main className="mx-auto min-h-screen w-full max-w-[1320px] px-6 pb-20 pt-28 sm:px-10">
-                  <section className="rounded-2xl border border-[var(--line)] bg-white p-8">
-                    <p className="text-sm text-[var(--muted)]">관리자 페이지 로딩 중...</p>
-                  </section>
-                </main>
-              }
-            >
-              <AdminPage user={user} profile={profile} authReady={authReady} />
-            </Suspense>
-          }
-        />
-        <Route path="/products/:slug" element={<ProductDetailPage user={user} profile={profile} />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-        <Route path="/products" element={<ProductPage user={user} profile={profile} />} />
-      </Routes>
+      <Suspense
+        fallback={
+          <main className="mx-auto min-h-screen w-full max-w-[1320px] px-6 pb-20 pt-28 sm:px-10">
+            <section className="rounded-2xl border border-[var(--line)] bg-white p-8">
+              <p className="text-sm text-[var(--muted)]">페이지 로딩 중...</p>
+            </section>
+          </main>
+        }
+      >
+        <Routes>
+          <Route path="/" element={<HomePage user={user} profile={profile} />} />
+          <Route path="/business" element={<BusinessPage />} />
+          <Route path="/contact" element={<ContactPage />} />
+          <Route path="/value" element={<ValuePage />} />
+          <Route path="/login" element={<LoginPage user={user} />} />
+          <Route path="/signup" element={<SignupPage user={user} />} />
+          <Route path="/orders/history" element={<OrderHistoryPage user={user} profile={profile} authReady={authReady} />} />
+          <Route path="/orders/checkout" element={<OrderCheckoutPage user={user} profile={profile} authReady={authReady} />} />
+          <Route path="/quotes/requests" element={<QuoteRequestsPage user={user} profile={profile} authReady={authReady} />} />
+          <Route path="/admin" element={<AdminPage user={user} profile={profile} authReady={authReady} />} />
+          <Route path="/products/:slug" element={<ProductDetailPage user={user} profile={profile} />} />
+          <Route path="/products" element={<ProductPage user={user} profile={profile} />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
       <GlobalOrderDock user={user} profile={profile} />
     </div>
   );

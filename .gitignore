@@ -67,3 +67,4 @@ dist/
 
 # dataconnect generated files
 .dataconnect
+.firebase/ 
