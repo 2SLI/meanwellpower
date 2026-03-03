@@ -1,12 +1,18 @@
-import { collection, doc, getDocs, serverTimestamp, setDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, serverTimestamp, setDoc } from 'firebase/firestore';
 import { getBlob, getDownloadURL, listAll, ref, uploadBytes } from 'firebase/storage';
 import { db, isFirebaseConfigured, storage } from './firebase';
 
 const UPDATE_EVENT = 'mw-products-updated';
+const CATALOG_CACHE_KEY = 'mw-products-catalog-cache-v1';
+const CATALOG_CACHE_MAX_AGE_MS = 1000 * 60 * 60 * 12;
+const PRODUCTS_COLLECTION = 'products';
+const PRODUCT_SUMMARIES_COLLECTION = 'productSummaries';
 const firestoreProductsBySlug = new Map();
+const detailLoadPromisesBySlug = new Map();
 
 let firestoreLoadPromise = null;
 let firestoreLoaded = false;
+let cacheHydrated = false;
 
 export function normalizeSlug(value) {
   return String(value ?? '')
@@ -97,6 +103,93 @@ function dispatchUpdateEvent() {
   window.dispatchEvent(new Event(UPDATE_EVENT));
 }
 
+function buildProductSummary(raw) {
+  const normalized = normalizeProduct(raw);
+  return {
+    slug: normalized.slug,
+    brand: normalized.brand,
+    model: normalized.model,
+    category: normalized.category,
+    spec: normalized.spec,
+    leadTime: normalized.leadTime,
+    supplyPrice: normalized.supplyPrice,
+    wholesalePrice: normalized.wholesalePrice,
+    image: normalized.image,
+    source: normalized.source
+  };
+}
+
+function getCachedCatalogPayload() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(CATALOG_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.products) || typeof parsed.savedAt !== 'number') {
+      return null;
+    }
+    if (Date.now() - parsed.savedAt > CATALOG_CACHE_MAX_AGE_MS) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function hydrateCatalogFromCache() {
+  if (cacheHydrated) {
+    return;
+  }
+  cacheHydrated = true;
+
+  const cached = getCachedCatalogPayload();
+  if (!cached) {
+    return;
+  }
+
+  firestoreProductsBySlug.clear();
+  cached.products.forEach((raw) => {
+    const normalized = normalizeProduct(raw);
+    if (normalized.slug && normalized.model) {
+      firestoreProductsBySlug.set(normalized.slug, normalized);
+    }
+  });
+  dispatchUpdateEvent();
+}
+
+function saveCatalogCache(products) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    const lightweight = products.map((item) => ({
+      slug: item.slug,
+      brand: item.brand,
+      model: item.model,
+      category: item.category,
+      spec: item.spec,
+      leadTime: item.leadTime,
+      supplyPrice: item.supplyPrice,
+      wholesalePrice: item.wholesalePrice,
+      image: item.image
+    }));
+    window.localStorage.setItem(
+      CATALOG_CACHE_KEY,
+      JSON.stringify({
+        savedAt: Date.now(),
+        products: lightweight
+      })
+    );
+  } catch {
+    // no-op
+  }
+}
+
 function normalizeFilenameToModel(fullPath) {
   const fileName = String(fullPath ?? '').split('/').pop() ?? '';
   if (!fileName) {
@@ -180,6 +273,8 @@ async function optimizeImageBlob(blob, options = {}) {
 }
 
 async function ensureFirestoreProductsLoaded() {
+  hydrateCatalogFromCache();
+
   if (!isFirebaseConfigured || !db || firestoreLoaded) {
     return;
   }
@@ -187,7 +282,16 @@ async function ensureFirestoreProductsLoaded() {
     return firestoreLoadPromise;
   }
 
-  firestoreLoadPromise = getDocs(collection(db, 'products'))
+  firestoreLoadPromise = getDocs(collection(db, PRODUCT_SUMMARIES_COLLECTION))
+    .then((snapshot) => {
+      const hasSummaryDocs = snapshot.docs.length > 0;
+      if (!hasSummaryDocs) {
+        return getDocs(collection(db, PRODUCTS_COLLECTION)).then((fallbackSnapshot) => ({
+          docs: fallbackSnapshot.docs
+        }));
+      }
+      return snapshot;
+    })
     .then((snapshot) => {
       firestoreProductsBySlug.clear();
       snapshot.docs.forEach((snapshotDoc) => {
@@ -200,6 +304,7 @@ async function ensureFirestoreProductsLoaded() {
         }
       });
       firestoreLoaded = true;
+      saveCatalogCache([...firestoreProductsBySlug.values()]);
       dispatchUpdateEvent();
     })
     .catch(() => {
@@ -213,12 +318,55 @@ async function ensureFirestoreProductsLoaded() {
 }
 
 export function getCatalogProducts() {
+  hydrateCatalogFromCache();
   ensureFirestoreProductsLoaded();
   return [...firestoreProductsBySlug.values()];
 }
 
 export function getCatalogProductBySlug(slug) {
   return getCatalogProducts().find((product) => product.slug === slug);
+}
+
+export async function ensureCatalogProductDetailLoaded(slug) {
+  const key = normalizeSlug(slug);
+  if (!key || !db) {
+    return;
+  }
+  if (detailLoadPromisesBySlug.has(key)) {
+    return detailLoadPromisesBySlug.get(key);
+  }
+
+  const pending = getDoc(doc(db, PRODUCTS_COLLECTION, key))
+    .then((snapshot) => {
+      if (!snapshot.exists()) {
+        return;
+      }
+
+      const normalized = normalizeProduct({
+        ...snapshot.data(),
+        slug: snapshot.id
+      });
+      if (!normalized.slug || !normalized.model) {
+        return;
+      }
+
+      const current = firestoreProductsBySlug.get(normalized.slug) || {};
+      firestoreProductsBySlug.set(normalized.slug, {
+        ...current,
+        ...normalized
+      });
+      saveCatalogCache([...firestoreProductsBySlug.values()]);
+      dispatchUpdateEvent();
+    })
+    .catch(() => {
+      // no-op
+    })
+    .finally(() => {
+      detailLoadPromisesBySlug.delete(key);
+    });
+
+  detailLoadPromisesBySlug.set(key, pending);
+  return pending;
 }
 
 export function upsertCatalogProduct(product) {
@@ -231,14 +379,26 @@ export function upsertCatalogProduct(product) {
   dispatchUpdateEvent();
 
   if (db) {
+    const updatedAt = serverTimestamp();
     setDoc(
-      doc(db, 'products', normalized.slug),
+      doc(db, PRODUCTS_COLLECTION, normalized.slug),
       {
         ...normalized,
-        updatedAt: serverTimestamp()
+        updatedAt
       },
       { merge: true }
-    ).catch(() => {});
+    )
+      .then(() =>
+        setDoc(
+          doc(db, PRODUCT_SUMMARIES_COLLECTION, normalized.slug),
+          {
+            ...buildProductSummary(normalized),
+            updatedAt
+          },
+          { merge: true }
+        )
+      )
+      .catch(() => {});
   }
 
   return normalized;
@@ -279,7 +439,7 @@ export async function backfillCatalogDetailFields(options = {}) {
   }
 
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
-  const snapshot = await getDocs(collection(db, 'products'));
+  const snapshot = await getDocs(collection(db, PRODUCTS_COLLECTION));
 
   let updated = 0;
   let skipped = 0;
@@ -307,7 +467,7 @@ export async function backfillCatalogDetailFields(options = {}) {
         skipped += 1;
       } else {
         await setDoc(
-          doc(db, 'products', snapshotDoc.id),
+          doc(db, PRODUCTS_COLLECTION, snapshotDoc.id),
           {
             ...next,
             updatedAt: serverTimestamp()
@@ -366,10 +526,18 @@ export async function syncCatalogProductsToFirestoreFromThumbnails(options = {})
     });
 
     await setDoc(
-      doc(db, 'products', slug),
+      doc(db, PRODUCTS_COLLECTION, slug),
       {
         ...normalized,
         thumbnailPath: fileRef.fullPath,
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
+    await setDoc(
+      doc(db, PRODUCT_SUMMARIES_COLLECTION, slug),
+      {
+        ...buildProductSummary(normalized),
         updatedAt: serverTimestamp()
       },
       { merge: true }

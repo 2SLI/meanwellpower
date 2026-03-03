@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { getCatalogProducts, subscribeCatalogUpdates } from '../lib/productCatalog';
+import { formatSupplyPriceLabel } from '../lib/priceFormat';
 
 function CatalogSection({ title = 'MEANWELL SMPS', showHeader = true, scrollId }) {
   const sectionRef = useRef(null);
@@ -155,8 +156,8 @@ function CatalogSection({ title = 'MEANWELL SMPS', showHeader = true, scrollId }
 
             <div className="mt-6 flex items-center justify-between gap-4">
               <div>
-                <p className="text-sm font-semibold text-[#7c8492]">
-                  공급가 : {product.supplyPrice || '-'}
+                <p className="text-sm font-semibold text-red-600">
+                  공급가 : {formatSupplyPriceLabel(product.supplyPrice)}
                 </p>
 
                 <p className="mt-1 text-[11px] font-semibold tracking-[0.06em] text-[var(--muted)]">부가세 별도</p>

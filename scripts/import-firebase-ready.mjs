@@ -171,6 +171,23 @@ async function main() {
       };
 
       await setDoc(doc(db, 'products', slug), payload, { merge: true });
+      await setDoc(
+        doc(db, 'productSummaries', slug),
+        {
+          slug,
+          brand: BRAND,
+          model: productId,
+          category: CATEGORY_DEFAULT,
+          spec: model.name,
+          leadTime: '',
+          supplyPrice: '',
+          wholesalePrice: '',
+          image: imageUrl,
+          source: 'firestore',
+          updatedAt: serverTimestamp()
+        },
+        { merge: true }
+      );
       firestoreWrites += 1;
       productCount += 1;
     });

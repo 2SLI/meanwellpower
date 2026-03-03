@@ -1,9 +1,10 @@
-import { Suspense, lazy, useEffect, useState } from 'react';
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Suspense, lazy, useEffect, useLayoutEffect, useState } from 'react';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import TopNav from './components/TopNav';
 import GlobalOrderDock from './components/GlobalOrderDock';
+import SiteFooter from './components/SiteFooter';
 import HomePage from './pages/HomePage';
 import { auth, db } from './lib/firebase';
 import { canLogin, resolveRole } from './lib/roles';
@@ -19,6 +20,67 @@ const QuoteRequestsPage = lazy(() => import('./pages/QuoteRequestsPage'));
 const OrderCheckoutPage = lazy(() => import('./pages/OrderCheckoutPage'));
 const ValuePage = lazy(() => import('./pages/ValuePage'));
 const ProductPage = lazy(() => import('./pages/ProductPage'));
+
+function SeoRouteMeta() {
+  const location = useLocation();
+
+  useEffect(() => {
+    const path = location.pathname;
+    const isProductDetail = /^\/products\/[^/]+$/.test(path);
+
+    let title = '민웰파워 | 산업용 전원 쇼핑몰';
+    let description =
+      '민웰파워는 MEAN WELL(민웰) SMPS 전원공급장치를 공급하는 B2B 전문 쇼핑몰입니다.';
+
+    if (path === '/products') {
+      title = 'MEAN WELL SMPS 제품목록 | 민웰파워';
+      description = '민웰 SMPS 모델별 공급가와 제품 정보를 확인하고 빠르게 발주하세요.';
+    } else if (isProductDetail) {
+      title = '민웰 SMPS 제품 상세 | 민웰파워';
+      description = '민웰파워 제품 상세 정보, 공급가, 납기 정보를 확인하세요.';
+    } else if (path === '/business') {
+      title = '기업구매 안내 | 민웰파워';
+    } else if (path === '/contact') {
+      title = '문의하기 | 민웰파워';
+    }
+
+    document.title = title;
+
+    const descMeta = document.querySelector('meta[name="description"]');
+    if (descMeta) {
+      descMeta.setAttribute('content', description);
+    }
+  }, [location.pathname]);
+
+  return null;
+}
+
+function ScrollToTopOnRouteChange() {
+  const location = useLocation();
+
+  useEffect(() => {
+    if ('scrollRestoration' in window.history) {
+      window.history.scrollRestoration = 'manual';
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    window.scrollTo(0, 0);
+    const rafId = window.requestAnimationFrame(() => {
+      window.scrollTo(0, 0);
+    });
+    const timeoutId = window.setTimeout(() => {
+      window.scrollTo(0, 0);
+    }, 120);
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [location.pathname]);
+
+  return null;
+}
 
 function App() {
   const [user, setUser] = useState(null);
@@ -79,6 +141,8 @@ function App() {
 
   return (
     <div className="min-h-screen bg-[var(--bg)] text-[var(--ink)]">
+      <SeoRouteMeta />
+      <ScrollToTopOnRouteChange />
       <TopNav user={user} profile={profile} onLogout={handleLogout} />
       <Suspense
         fallback={
@@ -105,6 +169,7 @@ function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Suspense>
+      <SiteFooter />
       <GlobalOrderDock user={user} profile={profile} />
     </div>
   );

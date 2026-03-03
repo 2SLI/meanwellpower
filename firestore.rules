@@ -45,6 +45,11 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    match /productSummaries/{productId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

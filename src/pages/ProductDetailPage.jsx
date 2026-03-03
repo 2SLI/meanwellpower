@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { getDownloadURL, listAll, ref } from 'firebase/storage';
-import { getCatalogProductBySlug, subscribeCatalogUpdates } from '../lib/productCatalog';
+import { ensureCatalogProductDetailLoaded, getCatalogProductBySlug, subscribeCatalogUpdates } from '../lib/productCatalog';
 import { commonDetailImagePath, storage } from '../lib/firebase';
+import { formatSupplyPriceLabel } from '../lib/priceFormat';
 import {
   openOrderListModal,
   readOrderListItems,
@@ -96,6 +97,10 @@ function ProductDetailPage({ user, profile }) {
       setCatalogVersion((prev) => prev + 1);
     });
   }, []);
+
+  useEffect(() => {
+    ensureCatalogProductDetailLoaded(slug);
+  }, [slug]);
 
   useEffect(() => {
     return subscribeOrderListUpdates(() => {
@@ -244,8 +249,8 @@ function ProductDetailPage({ user, profile }) {
           <p className="mt-5 text-sm leading-relaxed text-[var(--muted)]">{product.description}</p>
 
           <div className="mt-6 rounded-xl border border-[var(--line)] bg-[#f7f9fc] p-4">
-            <p className="text-sm font-semibold text-[#7c8492]">
-              공급가 : {product.supplyPrice || '-'}
+            <p className="text-sm font-semibold text-red-600">
+              공급가 : {formatSupplyPriceLabel(product.supplyPrice)}
             </p>
             <p className="mt-1 text-xs font-semibold tracking-[0.08em] text-[var(--muted)]">부가세 별도</p>
             <p className="mt-2 text-xs font-semibold tracking-[0.06em] text-[var(--muted)]">{product.leadTime}</p>
