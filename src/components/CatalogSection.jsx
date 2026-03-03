@@ -130,6 +130,11 @@ function CatalogSection({ title = 'MEANWELL SMPS', showHeader = true, scrollId }
 
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {paginatedProducts.map((product, index) => (
+          (() => {
+            const leadTime = String(product.leadTime || '').trim();
+            const hasLeadTime = leadTime && leadTime !== '-';
+
+            return (
           <article
             key={product.slug}
             className="animate-rise rounded-2xl border border-[var(--line)] bg-white p-6 shadow-[0_16px_36px_-30px_rgba(15,23,42,0.4)]"
@@ -161,7 +166,7 @@ function CatalogSection({ title = 'MEANWELL SMPS', showHeader = true, scrollId }
                 </p>
 
                 <p className="mt-1 text-[11px] font-semibold tracking-[0.06em] text-[var(--muted)]">부가세 별도</p>
-                <p className="mt-1 text-xs text-[var(--muted)]">{product.leadTime || '-'}</p>
+                {hasLeadTime ? <p className="mt-1 text-xs text-[var(--muted)]">{leadTime}</p> : null}
               </div>
 
               <Link
@@ -172,6 +177,8 @@ function CatalogSection({ title = 'MEANWELL SMPS', showHeader = true, scrollId }
               </Link>
             </div>
           </article>
+            );
+          })()
         ))}
 
         {filteredProducts.length === 0 ? (

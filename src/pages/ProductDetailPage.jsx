@@ -137,6 +137,8 @@ function ProductDetailPage({ user, profile }) {
   }, []);
 
   const product = useMemo(() => getCatalogProductBySlug(slug), [slug, catalogVersion]);
+  const leadTimeLabel = String(product?.leadTime || '').trim();
+  const hasLeadTime = leadTimeLabel && leadTimeLabel !== '-';
   const [selectedImage, setSelectedImage] = useState(() => product?.image ?? product?.detailImages?.[0] ?? '');
   const orderUnitPriceLabel = product?.supplyPrice;
   const orderUnitPriceValue = parsePriceValue(orderUnitPriceLabel);
@@ -253,7 +255,7 @@ function ProductDetailPage({ user, profile }) {
               공급가 : {formatSupplyPriceLabel(product.supplyPrice)}
             </p>
             <p className="mt-1 text-xs font-semibold tracking-[0.08em] text-[var(--muted)]">부가세 별도</p>
-            <p className="mt-2 text-xs font-semibold tracking-[0.06em] text-[var(--muted)]">{product.leadTime}</p>
+            {hasLeadTime ? <p className="mt-2 text-xs font-semibold tracking-[0.06em] text-[var(--muted)]">{leadTimeLabel}</p> : null}
           </div>
 
           <div className="mt-6 flex flex-wrap gap-2">
