@@ -28,7 +28,7 @@ function SeoRouteMeta() {
     const path = location.pathname;
     const isProductDetail = /^\/products\/[^/]+$/.test(path);
 
-    let title = '민웰파워 | 산업용 전원 쇼핑몰';
+    let title = '민웰파워 | 정품 민웰 SMPS 전문 공급업체';
     let description =
       '민웰파워는 MEAN WELL(민웰) SMPS 전원공급장치를 공급하는 B2B 전문 쇼핑몰입니다.';
 
