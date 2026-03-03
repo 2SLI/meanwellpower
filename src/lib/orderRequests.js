@@ -1,4 +1,4 @@
-﻿import { addDoc, collection, doc, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
+import { addDoc, collection, doc, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore/lite';
 import { auth, db } from './firebase';
 import { USER_ROLES } from './roles';
 
