@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://meanwellpower-103ae.web.app/sitemap.xml
+Sitemap: https://mwpower.co.kr/sitemap.xml
